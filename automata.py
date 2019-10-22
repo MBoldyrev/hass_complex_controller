@@ -1,24 +1,59 @@
+import asyncio
 import homeassistant.helpers.condition
-import threading
+#import threading
 
-from transitions import Machine
+#from transitions import Machine
+
+STATE_AUTO_ON = 'auto_on'
+STATE_MANUAL_ON = 'manual_on'
+STATE_DIM = 'dim'
+STATE_OFF = 'off'
+ALL_STATES = [STATE_AUTO_ON, STATE_MANUAL_ON, STATE_DIM, STATE_OFF]
+AUTO_CHANGEABLE_STATES = [STATE_AUTO_ON, STATE_DIM, STATE_OFF]
+
+EVENT_TYPE = 'type' # <--event.data key, and below come values:
+EVENT_TYPE_TOGGLE = 'toggle'
+EVENT_TYPE_MANUAL_ON = 'manual_on'
+EVENT_TYPE_MANUAL_OFF = 'manual_off'
+EVENT_TYPE_MOVEMENT = 'movement'
+EVENT_TYPE_TIMER = 'timer'
+
+
+class ComplexController(object):
+    def __init__(self, hass, config):
+        timer = HassTimerHelper(hass, config[CONF_TIMER])
+        self.dispatcher_tree = DispatcherTreeNode(hass, config[CONF_ROOT],
+                                                  timer)
+        #hass.async_block_till_done()
+        hass.bus.listen(config[CONF_EVENT], self.on_event)
+
+    def on_event(self, event):
+        self.dispatcher_tree.get_dispatcher().dispatch(event)
 
 
 class DispatcherTreeNode(object):
-    def __init__(self, config, is_root_node=True):
-        if not is_root_node:
-            self.condition = homeassistant.helpers.condition.async_from_config(
-                hass, config.get(CONF_CONDITIONS))
+    def __init__(self, config, tree_context):
+        condition_config = config.get(CONF_CONDITION)
+        self.condition = homeassistant.helpers.condition.async_from_config(
+            tree_context.hass,
+            condition_config) if condition_config is not None else lambda: true
 
-        dispather_type = config.get(CONF_DISPATCHER)
-        if dispather_type == CONF_DISPATCHER_LIGHT_DAY:
-            self.dispatcher = LightControllerDay(config)
-        elif dispather_type == CONF_DISPATCHER_LIGHT_NIGHT:
-            self.dispatcher = LightControllerNight(config)
+        dispatcher_config = config[CONF_CONFIG]
+        handler_context = HandlerContext(
+            tree_context, SceneController(hass, dispatcher_config),
+            StateController(tree_context))
+
+        dispather_type = config[CONF_TYPE]
+        if dispather_type == CONF_DISPATCHER_DIM:
+            self.dispatcher = make_dim_dispatcher(hass, config, timer)
+        elif dispather_type == CONF_DISPATCHER_SIMPLE:
+            self.dispatcher = LightControllerSimple(hass, config, timer)
+        else:
+            raise(BaseException('Unknown dispatcher type: {}'.format(dispather_type)))
 
         self.children = list()
         for child in config.get(CONF_OVERRIDES, []):
-            self.children.append(DispatcherTreeNode(child, False))
+            self.children.append(DispatcherTreeNode(hass, child, timer))
 
     def get_dispatcher(self):
         for child in children:
@@ -34,7 +69,11 @@ class HassTimerHelper(object):
         self.domain,  = split_entity_id(entity_id)
         self.entity_id = entity_id
         self.callback = callback
-        hass.bus.listen('timer.finished', self.on_timer_finish)
+        assert hass.setup_component(hass, "timer", timer_id)
+        self.remove_listener = hass.bus.listen('timer.finished', callback)
+
+    def __del__(self):
+        self.remove_listener()
 
     def schedule(self, delay):
         self.hass.services.async_call(self.domain, 'timer.start', {
@@ -45,10 +84,6 @@ class HassTimerHelper(object):
     def cancel(self):
         self.hass.services.async_call(self.domain, 'timer.cancel',
                                       {'entity_id': self.entity_id})
-
-    def on_timer_finish(self, event):
-        if event.data.get('entity_id') == self.entity_id:
-            self.callback()
 
 
 class ThreadingTimerHelper(object):
@@ -71,143 +106,151 @@ class MovementController(object):
         pass
 
 
-class ManualController(object):
-    def __init__(self, hass, config):
-        manual_on_event_name = config.get(CONF_MANUAL_ON_EVENT)
-        manual_off_event_name = config.get(CONF_MANUAL_OFF_EVENT)
-
-        if manual_on_event_name is not None:
-            hass.bus.listen(manual_on_event_name, {'entity_id': entity_id},
-                            callback)
-            # TODO use single event & different event data?
-
-    def turn_on(self):
-        pass
-
-    def turn_off(self):
-        pass
+def get_event_type(event):
+    return event.data[EVENT_TYPE]
 
 
-class BrightnessLightController(object):
-    def __init__(self, entities, brightness):
-        self.entities = entities
-        self.brightness = brightness
-
-    def call_on_entities(self, service, data):
-        for entity_id in self.entities:
-            domain, name = split_entity_id(entity_id)
-            data_copy = data.copy()
-            data_copy['entity_id'] = entity_id
-            self.hass.services.async_call(domain, service, data_copy)
-
-    def turn_on(self):
-        self.call_on_entities('turn_on', {'brightness': self.brightness})
-
-    def turn_off(self):
-        self.call_on_entities('turn_off')
-
-
-class LightControllerDim(MovementController, ManualController):
-    def __init__(self, hass, config):
-        MovementController.__init__(self, hass, config)
-        ManualController.__init__(self, hass, config)
-
+class TreeContext(object):
+    def __init__(self, hass, entity_id, timer):
         self.hass = hass
-        self.auto_on_duration = config.get(CONF_ON_DURATION, 90)
-        self.auto_dim_duration = config.get(CONF_DIM_DURATION, 30)
+        self.entity_id = entity_id
+        self.timer = timer
+        self.state_controller = StateController(hass, entity_id)
 
-        self.machine = Machine(
-            model=self,
-            states=['manual_on', 'auto_on', 'auto_dim', 'off'],
-            init='off',
-            ignore_invalid_triggers=True)
-        self.machine.add_transition(
-            'movement', ['auto_on', 'auto_dim', 'off'],
-            'auto_on',
-            after=['turn_light_on', 'schedule_auto_on_timer'])
-        self.machine.add_transition(
-            'timer_finished',
-            'auto_on',
-            'auto_dim',
-            after=['turn_dim', 'schedule_auto_dim_timer'])
-        self.machine.add_transition('timer_finished', 'auto_dim', 'off')
-        self.machine.add_transition('manual_on',
-                                    '*',
-                                    'manual_on',
-                                    after=['cancel_timer', 'turn_light_on'])
-        self.machine.add_transition('manual_off',
-                                    '*',
-                                    'off',
-                                    after='cancel_timer')
-        self.machine.add_transition('manual_toggle', ['auto_on', 'manual_on'],
-                                    'off',
-                                    after='cancel_timer')
-        self.machine.add_transition('manual_toggle', ['auto_dim', 'off'],
-                                    'manual_on',
-                                    after=['cancel_timer', 'turn_light_on'])
 
-    def schedule_auto_on_timer(self):
-        self.timer.schedule(self.auto_on_duration)
+class HandlerContext(object):
+    def __init__(self, tree_context, scene_controller):
+        self.tree_context = tree_context
+        self.scene_controller = scene_controller
 
-    def schedule_auto_dim_timer(self):
-        self.timer.schedule(self.auto_dim_duration)
 
-    def turn_dim(self):
-        pass
+class Dispatcher(object):
+    def __init__(self, handler_context):
+        self.handler_context = handler_context
+        self.strategies = list()
 
-    def turn_on(self):
-        pass
+    def add_strategy(self, strategy):
+        self.strategies.append(strategy)
+
+    def dispatch(self, event):
+        current_state = self.handler_context.tree_context.state_controller.get(
+        ).state
+        event_type = get_event_type(event)
+        for strategy in self.strategies:
+            handler = strategy.get_handler(current_state, event_type)
+            if handler is not None:
+                timer.cancel()
+                handler(self.handler_context, current_state, event)
+                return
+        print('No handler registered for transition from {} on {}'.format(
+            state, get_event_type(event)))
+
+
+class HandlerStrategyBase(object):
+    def __init__(self):
+        self.handler_map = dict()
+
+    def set_handler(self, states, event_types, handler):
+        if not isinstance(states, list):
+            states = [states]
+        if not isinstance(event_types, list):
+            event_types = [event_types]
+        for state in states:
+            for event_type in event_types:
+                self.handler_map[state, get_event_type(event)] = handler
+
+    def get_handler(self, state, event):
+        return handler_map.get((state, get_event_type(event)))
+
+
+class ManualHandlerStrategy(HandlerStrategyBase):
+    def __init__(self):
+        HandlerStrategyBase.__init__(self)
+
+        self.set_handler([STATE_OFF, STATE_DIM], EVENT_TYPE_TOGGLE,
+                         self.turn_on)
+        self.set_handler([STATE_ON, STATE_AUTO_ON], EVENT_TYPE_TOGGLE,
+                         self.turn_off)
+        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_ON, self.turn_on)
+        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF, self.turn_off)
+
+    def turn_on(self, context, current_state, event):
+        context.controller.turn_on()
+        context.tree_context.state_controller.set(STATE_MANUAL_ON)
 
     def turn_off(self):
-        pass
+        context.controller.turn_off()
+        context.tree_context.state_controller.set(STATE_OFF)
 
 
-class LightController(MovementController, ManualController):
-    def __init__(self, hass, config):
-        MovementController.__init__(self, hass, config)
-        ManualController.__init__(self, hass, config)
+class SimpleMovementHandlerStrategy(HandlerStrategyBase):
+    def __init__(self, config):
+        HandlerStrategyBase.__init__(self)
+        self.duration_on = config[CONF_DURATION_ON]
 
+        self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_MOVEMENT,
+                         self.turn_on)
+        self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_TIMER,
+                         self.turn_off)
+
+    def turn_on(self, context, current_state, event):
+        context.scene_controller.turn_on()
+        context.tree_context.timer.schedule(duration_on)
+        context.tree_context.state_controller.set(STATE_AUTO_ON)
+
+    def turn_off(self, context, current_state, event):
+        context.scene_controller.turn_off()
+        context.tree_context.state_controller.set(STATE_OFF)
+
+
+class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
+    def __init__(self, config):
+        SimpleMovementHandlerStrategy.__init__(self, config)
+        self.duration_dim = config.get(CONF_DURATION_DIM, self.duration_on)
+
+        self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_MOVEMENT,
+                         self.turn_on)
+        self.set_handler(STATE_AUTO_ON, EVENT_TYPE_TIMER, self.turn_dim)
+        self.set_handler(STATE_DIM, EVENT_TYPE_TIMER, self.turn_off)
+
+    def turn_dim(self, context, current_state, event):
+        context.scene_controller.turn_dim()
+        context.tree_context.timer.schedule(duration_dim)
+        context.tree_context.state_controller.set(STATE_DIM)
+
+
+def make_simple_dispatcher(config, handler_context):
+    dispatcher = Dispatcher(handler_context)
+    dispatcher.add_strategy(ManualHandlerStrategy(config))
+    dispatcher.add_strategy(SimpleMovementHandlerStrategy(config))
+
+
+def make_dim_dispatcher(config, handler_context):
+    dispatcher = Dispatcher(handler_context)
+    dispatcher.add_strategy(ManualHandlerStrategy(config))
+    dispatcher.add_strategy(DimMovementHandlerStrategy(config))
+
+
+class StateController(object):
+    def __init__(self, hass, entity_id):
         self.hass = hass
-        self.auto_on_duration = config.get(CONF_ON_DURATION, 90)
-        self.timer = TimerHelper(hass, config[CONF_TIMER], self.timer_finished)
+        self.entity_id = entity_id
 
-        self.machine = Machine(model=self,
-                               states=['manual_on', 'auto_on', 'off'],
-                               init='off',
-                               ignore_invalid_triggers=True)
-        self.machine.add_transition(
-            'movement', ['auto_on', 'off'],
-            'auto_on',
-            after=['turn_light_on', 'schedule_auto_on_timer'])
-        self.machine.add_transition('timer_finished', 'auto_on', 'off')
-        self.machine.add_transition('manual_on',
-                                    '*',
-                                    'manual_on',
-                                    after=['cancel_timer', 'turn_light_on'])
-        self.machine.add_transition('manual_off',
-                                    '*',
-                                    'off',
-                                    after='cancel_timer')
-        self.machine.add_transition('manual_toggle', ['auto_on', 'manual_on'],
-                                    'off',
-                                    after='cancel_timer')
-        self.machine.add_transition('manual_toggle',
-                                    'off',
-                                    'manual_on',
-                                    after=['cancel_timer', 'turn_light_on'])
+    def set(self, state):
+        self.hass.states.async_set(self.entity_id, state)
 
-    def schedule_auto_on_timer(self):
-        self.timer.schedule(self.auto_on_duration)
+    def get(self):
+        return self.hass.states.get(self.entity_id)
 
 
-class LightDispatcherDimScenes(LightControllerDim):
+class SceneController(object):
     class Scene(object):
         def __ini__(self, entity_id):
             assert(entity_id is not None)
             self.domain, self.name = split_entity_id(entity_id)[0], entity_id
 
     def __init__(self, hass, config):
-        LightControllerDim.__init__(self, hass, config)
+        self.hass = hass
 
         def get_scene(conf_key):
             entity_id = config.get(conf_key)
@@ -215,9 +258,9 @@ class LightDispatcherDimScenes(LightControllerDim):
                 return None
             return Scene(entity_id)
 
-        self.on_scene = get_domain_and_id(CONF_ON_SCENE)
-        self.dim_scene = get_domain_and_id(CONF_DIM_SCENE)
-        self.off_scene = get_domain_and_id(CONF_OFF_SCENE)
+        self.scene_on = get_scene(CONF_SCENE_ON)
+        self.scene_dim = get_scene(CONF_SCENE_DIM)
+        self.scene_off = get_scene(CONF_SCENE_OFF)
 
     def set_scene(self, scene):
         if scene is None:
@@ -226,10 +269,10 @@ class LightDispatcherDimScenes(LightControllerDim):
                                       {'entity_id': scene.name})
 
     def turn_on(self):
-        self.set_scene(self.on_scene)
+        self.set_scene(self.scene_on)
 
     def turn_dim(self):
-        self.set_scene(self.dim_scene)
+        self.set_scene(self.scene_dim)
 
     def turn_off(self):
-        self.set_scene(self.off_scene)
+        self.set_scene(self.scene_off)
