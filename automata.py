@@ -4,6 +4,17 @@ import homeassistant.helpers.condition
 
 #from transitions import Machine
 
+CONF_CONFIG = 'config'
+CONF_DISPATCHER_DIM = 'dim'
+CONF_DISPATCHER_SIMPLE = 'simple'
+CONF_DURATION_ON = 'duration_on'
+CONF_DURATION_DIM = 'duration_dim'
+CONF_OVERRIDES = 'overrides'
+CONF_SCENE_ON = 'scene_on'
+CONF_SCENE_DIM = 'scene_dim'
+CONF_SCENE_OFF = 'scene_off'
+CONF_TIMER = 'timer'
+
 STATE_AUTO_ON = 'auto_on'
 STATE_MANUAL_ON = 'manual_on'
 STATE_DIM = 'dim'
@@ -20,23 +31,30 @@ EVENT_TYPE_TIMER = 'timer'
 
 
 class ComplexController(object):
-    def __init__(self, hass, config):
+    def __init__(hass, config):
+        self.hass = hass
         tree_context = TreeContext(
             hass, config[CONF_ENTITY_ID],
             HassTimerHelper(hass, config[CONF_TIMER], self.on_event))
-        self.dispatcher_tree = DispatcherTreeNode(hass, config[CONF_ROOT],
-                                                  tree_context)
-        #hass.async_block_till_done()
+        self.dispatcher_tree = DispatcherTreeNode.create(
+            hass, config[CONF_BASE], tree_context)
         hass.bus.listen(config[CONF_EVENT], self.on_event)
 
+    @homeassistant.core.callback
     def on_event(self, event):
-        self.dispatcher_tree.get_dispatcher().dispatch(event)
+        self.hass.loop.create_task(
+            self.dispatcher_tree.get_dispatcher().dispatch(event))
 
 
 class DispatcherTreeNode(object):
+    def get_condition_from_config(hass, condition_config):
+        return asyncio.run_coroutine_threadsafe(
+            homeassistant.helpers.condition.async_from_config(
+                tree_context.hass, condition_config), hass.loop).result()
+
     def __init__(self, config, tree_context):
         condition_config = config.get(CONF_CONDITION)
-        self.condition = homeassistant.helpers.condition.async_from_config(
+        self.condition = get_condition_from_config(
             tree_context.hass,
             condition_config) if condition_config is not None else lambda: true
 
@@ -76,33 +94,23 @@ class HassTimerHelper(object):
     def __del__(self):
         self.remove_listener()
 
-    def schedule(self, delay):
-        self.hass.services.async_call(self.entity_id.domain, 'timer.start', {
-            ATTR_ENTITY_ID: self.entity_id.full,
-            'duration': delay
-        })
+    async def async_schedule(self, delay):
+        await self.hass.services.async_call(
+            self.entity_id.domain, 'timer.start', {
+                ATTR_ENTITY_ID: self.entity_id.full,
+                'duration': delay
+            })
 
-    def cancel(self):
+    async def async_cancel(self):
         self.hass.services.async_call(self.entity_i.domain, 'timer.cancel',
                                       {ATTR_ENTITY_ID: self.entity_id.full})
 
+    @homeassistant.core.callback
     def on_timer_finished(self, event):
         if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
             self.callback(
                 homeassistant.core.Event(event.event_type,
                                          data={EVENT_TYPE: EVENT_TYPE_TIMER}))
-
-
-class ThreadingTimerHelper(object):
-    def __init__(self, callback):
-        self.callback = callback
-        self.handle = None
-
-    def schedule(self, delay):
-        self.handle = threading.Timer(delay, self.callback)
-
-    def cancel(self):
-        self.handle.cancel()
 
 
 def get_event_type(event):
@@ -131,15 +139,15 @@ class Dispatcher(object):
     def add_strategy(self, strategy):
         self.strategies.append(strategy)
 
-    def dispatch(self, event):
+    async def dispatch(self, event):
         current_state = self.handler_context.tree_context.state_controller.get(
         ).state
         event_type = get_event_type(event)
         for strategy in self.strategies:
             handler = strategy.get_handler(current_state, event_type)
             if handler is not None:
-                timer.cancel()
-                handler(self.handler_context, current_state, event)
+                await timer.async_cancel()
+                await handler(self.handler_context, current_state, event)
                 return
         print('No handler registered for transition from {} on {}'.format(
             state, get_event_type(event)))
@@ -167,19 +175,19 @@ class ManualHandlerStrategy(HandlerStrategyBase):
         HandlerStrategyBase.__init__(self)
 
         self.set_handler([STATE_OFF, STATE_DIM], EVENT_TYPE_TOGGLE,
-                         self.turn_on)
-        self.set_handler([STATE_ON, STATE_AUTO_ON], EVENT_TYPE_TOGGLE,
-                         self.turn_off)
-        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_ON, self.turn_on)
-        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF, self.turn_off)
+                         self.async_turn_on)
+        self.set_handler([STATE_AUTO_ON, STATE_MANUAL_ON], EVENT_TYPE_TOGGLE,
+                         self.async_turn_off)
+        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_ON, self.async_turn_on)
+        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF, self.async_turn_off)
 
-    def turn_on(self, context, current_state, event):
-        context.controller.turn_on()
-        context.tree_context.state_controller.set(STATE_MANUAL_ON)
+    async def async_turn_on(self, context, current_state, event):
+        await context.controller.async_turn_on()
+        await context.tree_context.state_controller.async_set(STATE_MANUAL_ON)
 
-    def turn_off(self):
-        context.controller.turn_off()
-        context.tree_context.state_controller.set(STATE_OFF)
+    async def async_turn_off(self):
+        await context.controller.async_turn_off()
+        await context.tree_context.state_controller.async_set(STATE_OFF)
 
 
 class SimpleMovementHandlerStrategy(HandlerStrategyBase):
@@ -188,18 +196,18 @@ class SimpleMovementHandlerStrategy(HandlerStrategyBase):
         self.duration_on = config[CONF_DURATION_ON]
 
         self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_MOVEMENT,
-                         self.turn_on)
+                         self.async_turn_on)
         self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_TIMER,
-                         self.turn_off)
+                         self.async_turn_off)
 
-    def turn_on(self, context, current_state, event):
-        context.scene_controller.turn_on()
-        context.tree_context.timer.schedule(duration_on)
-        context.tree_context.state_controller.set(STATE_AUTO_ON)
+    async def async_turn_on(self, context, current_state, event):
+        await context.scene_controller.async_turn_on()
+        await context.tree_context.timer.async_schedule(duration_on)
+        await context.tree_context.state_controller.async_set(STATE_AUTO_ON)
 
-    def turn_off(self, context, current_state, event):
-        context.scene_controller.turn_off()
-        context.tree_context.state_controller.set(STATE_OFF)
+    async def async_turn_off(self, context, current_state, event):
+        await context.scene_controller.async_turn_off()
+        await context.tree_context.state_controller.async_set(STATE_OFF)
 
 
 class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
@@ -208,14 +216,14 @@ class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
         self.duration_dim = config.get(CONF_DURATION_DIM, self.duration_on)
 
         self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_MOVEMENT,
-                         self.turn_on)
-        self.set_handler(STATE_AUTO_ON, EVENT_TYPE_TIMER, self.turn_dim)
-        self.set_handler(STATE_DIM, EVENT_TYPE_TIMER, self.turn_off)
+                         self.async_turn_on)
+        self.set_handler(STATE_AUTO_ON, EVENT_TYPE_TIMER, self.async_turn_dim)
+        self.set_handler(STATE_DIM, EVENT_TYPE_TIMER, self.async_turn_off)
 
-    def turn_dim(self, context, current_state, event):
-        context.scene_controller.turn_dim()
-        context.tree_context.timer.schedule(duration_dim)
-        context.tree_context.state_controller.set(STATE_DIM)
+    async def async_turn_dim(self, context, current_state, event):
+        await context.scene_controller.async_turn_dim()
+        await context.tree_context.timer.async_schedule(duration_dim)
+        await context.tree_context.state_controller.async_set(STATE_DIM)
 
 
 def make_simple_dispatcher(config, handler_context):
@@ -235,7 +243,7 @@ class StateController(object):
         self.hass = hass
         self.entity_id = entity_id
 
-    def set(self, state):
+    async def async_set(self, state):
         self.hass.states.async_set(self.entity_id, state)
 
     def get(self):
@@ -256,20 +264,20 @@ class SceneController(object):
         self.scene_dim = get_scene(CONF_SCENE_DIM)
         self.scene_off = get_scene(CONF_SCENE_OFF)
 
-    def set_scene(self, scene_id):
+    async def async_set_scene(self, scene_id):
         if scene_id is None:
             return
-        self.hass.services.async_call(scene_id.domain, 'scene.turn_on',
-                                      {ATTR_ENTITY_ID: scene_id.full})
+        await self.hass.services.async_call(scene_id.domain, 'scene.turn_on',
+                                            {ATTR_ENTITY_ID: scene_id.full})
 
-    def turn_on(self):
-        self.set_scene(self.scene_on)
+    async def async_turn_on(self):
+        await self.async_set_scene(self.scene_on)
 
-    def turn_dim(self):
-        self.set_scene(self.scene_dim)
+    async def async_turn_dim(self):
+        await self.async_set_scene(self.scene_dim)
 
-    def turn_off(self):
-        self.set_scene(self.scene_off)
+    async def async_turn_off(self):
+        await self.async_set_scene(self.scene_off)
 
 
 class SplitId(object):
