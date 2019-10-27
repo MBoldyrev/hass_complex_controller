@@ -1,4 +1,5 @@
 complex_controller:
+  entity_id: hallway_complex_controller
   event: hallway_event
   timer: hallway_timer
   root:

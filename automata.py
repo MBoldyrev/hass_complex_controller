@@ -11,7 +11,7 @@ STATE_OFF = 'off'
 ALL_STATES = [STATE_AUTO_ON, STATE_MANUAL_ON, STATE_DIM, STATE_OFF]
 AUTO_CHANGEABLE_STATES = [STATE_AUTO_ON, STATE_DIM, STATE_OFF]
 
-EVENT_TYPE = 'type' # <--event.data key, and below come values:
+EVENT_TYPE = 'type'  # <--event.data key, and below come values:
 EVENT_TYPE_TOGGLE = 'toggle'
 EVENT_TYPE_MANUAL_ON = 'manual_on'
 EVENT_TYPE_MANUAL_OFF = 'manual_off'
@@ -21,9 +21,11 @@ EVENT_TYPE_TIMER = 'timer'
 
 class ComplexController(object):
     def __init__(self, hass, config):
-        timer = HassTimerHelper(hass, config[CONF_TIMER])
+        tree_context = TreeContext(
+            hass, config[CONF_ENTITY_ID],
+            HassTimerHelper(hass, config[CONF_TIMER], self.on_event))
         self.dispatcher_tree = DispatcherTreeNode(hass, config[CONF_ROOT],
-                                                  timer)
+                                                  tree_context)
         #hass.async_block_till_done()
         hass.bus.listen(config[CONF_EVENT], self.on_event)
 
@@ -40,20 +42,20 @@ class DispatcherTreeNode(object):
 
         dispatcher_config = config[CONF_CONFIG]
         handler_context = HandlerContext(
-            tree_context, SceneController(hass, dispatcher_config),
-            StateController(tree_context))
+            tree_context, SceneController(hass, dispatcher_config))
 
         dispather_type = config[CONF_TYPE]
         if dispather_type == CONF_DISPATCHER_DIM:
-            self.dispatcher = make_dim_dispatcher(hass, config, timer)
+            self.dispatcher = make_dim_dispatcher(config, handler_context)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
-            self.dispatcher = LightControllerSimple(hass, config, timer)
+            self.dispatcher = make_simple_dispatcher(config, handler_context)
         else:
-            raise(BaseException('Unknown dispatcher type: {}'.format(dispather_type)))
+            raise (BaseException(
+                'Unknown dispatcher type: {}'.format(dispather_type)))
 
         self.children = list()
         for child in config.get(CONF_OVERRIDES, []):
-            self.children.append(DispatcherTreeNode(hass, child, timer))
+            self.children.append(DispatcherTreeNode(hass, child, tree_context))
 
     def get_dispatcher(self):
         for child in children:
@@ -65,25 +67,30 @@ class DispatcherTreeNode(object):
 class HassTimerHelper(object):
     def __init__(self, hass, entity_id, callback):
         self.hass = hass
-        self.entity_id = entity_id
-        self.domain,  = split_entity_id(entity_id)
-        self.entity_id = entity_id
+        self.entity_id = SplitId(entity_id)
         self.callback = callback
-        assert hass.setup_component(hass, "timer", timer_id)
-        self.remove_listener = hass.bus.listen('timer.finished', callback)
+        assert hass.setup_component(hass, 'timer', entity_id)
+        self.remove_listener = hass.bus.listen('timer.finished',
+                                               self.on_timer_finished)
 
     def __del__(self):
         self.remove_listener()
 
     def schedule(self, delay):
-        self.hass.services.async_call(self.domain, 'timer.start', {
-            'entity_id': self.entity_id,
+        self.hass.services.async_call(self.entity_id.domain, 'timer.start', {
+            ATTR_ENTITY_ID: self.entity_id.full,
             'duration': delay
         })
 
     def cancel(self):
-        self.hass.services.async_call(self.domain, 'timer.cancel',
-                                      {'entity_id': self.entity_id})
+        self.hass.services.async_call(self.entity_i.domain, 'timer.cancel',
+                                      {ATTR_ENTITY_ID: self.entity_id.full})
+
+    def on_timer_finished(self, event):
+        if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
+            self.callback(
+                homeassistant.core.Event(event.event_type,
+                                         data={EVENT_TYPE: EVENT_TYPE_TIMER}))
 
 
 class ThreadingTimerHelper(object):
@@ -96,14 +103,6 @@ class ThreadingTimerHelper(object):
 
     def cancel(self):
         self.handle.cancel()
-
-
-class MovementController(object):
-    def __init__(self, config):
-        self.movement_event_name = config.get(CONF_MOVEMENT_EVENT)
-
-    def on_movement(self):
-        pass
 
 
 def get_event_type(event):
@@ -244,11 +243,6 @@ class StateController(object):
 
 
 class SceneController(object):
-    class Scene(object):
-        def __ini__(self, entity_id):
-            assert(entity_id is not None)
-            self.domain, self.name = split_entity_id(entity_id)[0], entity_id
-
     def __init__(self, hass, config):
         self.hass = hass
 
@@ -256,17 +250,17 @@ class SceneController(object):
             entity_id = config.get(conf_key)
             if entity_id is None:
                 return None
-            return Scene(entity_id)
+            return SplitId(entity_id)
 
         self.scene_on = get_scene(CONF_SCENE_ON)
         self.scene_dim = get_scene(CONF_SCENE_DIM)
         self.scene_off = get_scene(CONF_SCENE_OFF)
 
-    def set_scene(self, scene):
-        if scene is None:
+    def set_scene(self, scene_id):
+        if scene_id is None:
             return
-        self.hass.services.async_call(scene.domain, 'scene.turn_on',
-                                      {'entity_id': scene.name})
+        self.hass.services.async_call(scene_id.domain, 'scene.turn_on',
+                                      {ATTR_ENTITY_ID: scene_id.full})
 
     def turn_on(self):
         self.set_scene(self.scene_on)
@@ -276,3 +270,10 @@ class SceneController(object):
 
     def turn_off(self):
         self.set_scene(self.scene_off)
+
+
+class SplitId(object):
+    def __ini__(self, entity_id):
+        assert (entity_id is not None)
+        self.domain, self.name = homeassistant.core.split_entity_id(entity_id)
+        self.full = entity_id
