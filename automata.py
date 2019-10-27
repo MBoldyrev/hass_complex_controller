@@ -4,6 +4,8 @@ import homeassistant.helpers.condition
 
 #from transitions import Machine
 
+DOMAIN = 'complex_controller'
+
 CONF_CONFIG = 'config'
 CONF_DISPATCHER_DIM = 'dim'
 CONF_DISPATCHER_SIMPLE = 'simple'
@@ -21,13 +23,20 @@ STATE_DIM = 'dim'
 STATE_OFF = 'off'
 ALL_STATES = [STATE_AUTO_ON, STATE_MANUAL_ON, STATE_DIM, STATE_OFF]
 AUTO_CHANGEABLE_STATES = [STATE_AUTO_ON, STATE_DIM, STATE_OFF]
+DEFAULT_STATE = STATE_OFF
 
-EVENT_TYPE = 'type'  # <--event.data key, and below come values:
+EVENT_TYPE = 'type'  # <-- key in service call data dict, and below come values:
 EVENT_TYPE_TOGGLE = 'toggle'
 EVENT_TYPE_MANUAL_ON = 'manual_on'
 EVENT_TYPE_MANUAL_OFF = 'manual_off'
 EVENT_TYPE_MOVEMENT = 'movement'
 EVENT_TYPE_TIMER = 'timer'
+
+
+def setup(hass, config):
+    # try/catch?
+    components.append(ComplexController(hass, config))
+    return True
 
 
 class ComplexController(object):
@@ -36,9 +45,11 @@ class ComplexController(object):
         tree_context = TreeContext(
             hass, config[CONF_ENTITY_ID],
             HassTimerHelper(hass, config[CONF_TIMER], self.on_event))
+        asyncio.run_coroutine_threadsafe(
+            tree_context.state_controller.async_set(DEFAULT_STATE), hass.loop)
         self.dispatcher_tree = DispatcherTreeNode.create(
             hass, config[CONF_BASE], tree_context)
-        hass.bus.listen(config[CONF_EVENT], self.on_event)
+        hass.services.register(DOMAIN, config[CONF_NAME], self.on_event)
 
     @homeassistant.core.callback
     def on_event(self, event):
@@ -108,13 +119,11 @@ class HassTimerHelper(object):
     @homeassistant.core.callback
     def on_timer_finished(self, event):
         if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
-            self.callback(
-                homeassistant.core.Event(event.event_type,
-                                         data={EVENT_TYPE: EVENT_TYPE_TIMER}))
+            self.callback({EVENT_TYPE: EVENT_TYPE_TIMER})
 
 
 def get_event_type(event):
-    return event.data[EVENT_TYPE]
+    return event[EVENT_TYPE]
 
 
 class TreeContext(object):

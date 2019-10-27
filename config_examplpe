@@ -1,8 +1,7 @@
 complex_controller:
-  entity_id: hallway_complex_controller
-  event: hallway_event
+  name: hallway
   timer: hallway_timer
-  root:
+  base:
     type: dim
     config:
       scene_on: hallway_day_on
