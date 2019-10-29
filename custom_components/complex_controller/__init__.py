@@ -5,8 +5,9 @@ import voluptuous as vol
 import homeassistant.core
 import homeassistant.helpers.config_validation as cv
 from homeassistant.setup import setup_component
-from homeassistant.const import (CONF_CONDITION, CONF_ENTITY_ID, CONF_NAME,
-                                 CONF_TYPE, CONF_BASE)
+from homeassistant.const import (ATTR_ENTITY_ID, CONF_CONDITION,
+                                 CONF_ENTITY_ID, CONF_NAME, CONF_TYPE,
+                                 CONF_BASE)
 
 from .const import *
 
@@ -89,8 +90,10 @@ class DispatcherTreeNode(object):
                 tree_context.hass.loop).result()
 
         condition_config = config.get(CONF_CONDITION)
-        self.condition = get_condition_from_config(
+        self._condition = get_condition_from_config(
             condition_config) if condition_config is not None else lambda: true
+
+        self.tree_context = tree_context
 
         #dispatcher_config = config[CONF_CONFIG]
         handler_context = HandlerContext(
@@ -109,9 +112,12 @@ class DispatcherTreeNode(object):
         for child in config.get(CONF_OVERRIDES, []):
             self.children.append(DispatcherTreeNode(child, tree_context))
 
+    def check_condition(self):
+        return self._condition(self.tree_context.hass)
+
     def get_dispatcher(self):
-        for child in children:
-            if child.condition():
+        for child in self.children:
+            if child.check_condition():
                 return child.get_dispatcher()
         return self.dispatcher
 
@@ -139,7 +145,7 @@ class HassTimerHelper(object):
             })
 
     async def async_cancel(self):
-        self.hass.services.async_call(self.entity_i.domain, 'timer.cancel',
+        self.hass.services.async_call(self.entity_id.domain, 'timer.cancel',
                                       {ATTR_ENTITY_ID: self.entity_id.full})
 
     @homeassistant.core.callback
@@ -149,7 +155,7 @@ class HassTimerHelper(object):
 
 
 def get_event_type(event):
-    return event[EVENT_TYPE]
+    return event.data[EVENT_TYPE]
 
 
 class TreeContext(object):
@@ -181,11 +187,12 @@ class Dispatcher(object):
         for strategy in self.strategies:
             handler = strategy.get_handler(current_state, event_type)
             if handler is not None:
-                await timer.async_cancel()
+                await self.handler_context.tree_context.timer.async_cancel()
                 await handler(self.handler_context, current_state, event)
                 return
-        print('No handler registered for transition from {} on {}'.format(
-            state, get_event_type(event)))
+        _LOGGER.error(
+            'No handler registered for transition from {} on {}'.format(
+                state, get_event_type(event)))
 
 
 class HandlerStrategyBase(object):
@@ -201,8 +208,8 @@ class HandlerStrategyBase(object):
             for event_type in event_types:
                 self.handler_map[state, event_type] = handler
 
-    def get_handler(self, state, event):
-        return handler_map.get((state, get_event_type(event)))
+    def get_handler(self, state, event_type):
+        return self.handler_map.get((state, event_type))
 
 
 class ManualHandlerStrategy(HandlerStrategyBase):
@@ -217,11 +224,11 @@ class ManualHandlerStrategy(HandlerStrategyBase):
         self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF, self.async_turn_off)
 
     async def async_turn_on(self, context, current_state, event):
-        await context.controller.async_turn_on()
+        await context.scene_controller.async_turn_on()
         await context.tree_context.state_controller.async_set(STATE_MANUAL_ON)
 
     async def async_turn_off(self):
-        await context.controller.async_turn_off()
+        await context.scene_controller.async_turn_off()
         await context.tree_context.state_controller.async_set(STATE_OFF)
 
 
@@ -265,12 +272,14 @@ def make_simple_dispatcher(config, handler_context):
     dispatcher = Dispatcher(handler_context)
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(SimpleMovementHandlerStrategy(config))
+    return dispatcher
 
 
 def make_dim_dispatcher(config, handler_context):
     dispatcher = Dispatcher(handler_context)
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(DimMovementHandlerStrategy(config))
+    return dispatcher
 
 
 class StateController(object):
