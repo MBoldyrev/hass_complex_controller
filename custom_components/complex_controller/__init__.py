@@ -1,7 +1,10 @@
+"""The complex_controller integration."""
 import asyncio
-import homeassistant.helpers.condition
+import logging
 import voluptuous as vol
+import homeassistant.core
 import homeassistant.helpers.config_validation as cv
+from homeassistant.setup import setup_component
 from homeassistant.const import (CONF_CONDITION, CONF_ENTITY_ID, CONF_NAME,
                                  CONF_TYPE, CONF_BASE)
 
@@ -9,19 +12,18 @@ from .const import *
 
 BASE_SCHEMA = vol.Schema(
     {
-        CONF_TYPE: vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM)),
-        CONF_CONFIG: {
-            CONF_SCENE_ON:
-            cv.entity_id,
-            vol.Optional(CONF_SCENE_DIM):
-            cv.entity_id,
-            CONF_SCENE_OFF:
-            cv.entity_id,
-            CONF_DURATION_ON:
-            vol.All(cv.time_period, cv.positive_timedelta),
-            vol.Optional(CONF_DURATION_DIM):
-            vol.All(cv.time_period, cv.positive_timedelta)
-        }
+        CONF_TYPE:
+        vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM)),
+        CONF_SCENE_ON:
+        cv.entity_id,
+        vol.Optional(CONF_SCENE_DIM):
+        cv.entity_id,
+        CONF_SCENE_OFF:
+        cv.entity_id,
+        CONF_DURATION_ON:
+        vol.All(cv.time_period, cv.positive_timedelta),
+        vol.Optional(CONF_DURATION_DIM):
+        vol.All(cv.time_period, cv.positive_timedelta)
     },
     required=True)
 
@@ -46,23 +48,30 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
     required=True)
 
+components = []
+
+_LOGGER = logging.getLogger(__name__)
 
 def setup(hass, config):
+    """Set up the complex_controller integration."""
     # try/catch?
-    components.append(ComplexController(hass, config))
+    hass.states.set('complex_controller.test', f'hello there, my name is {config[DOMAIN][CONF_NAME]}')
+    components.append(ComplexController(hass, config[DOMAIN]))
     return True
 
 
 class ComplexController(object):
-    def __init__(hass, config):
+    def __init__(self, hass, config):
         self.hass = hass
+        entity_id = f'{DOMAIN}.{config[CONF_NAME]}'
         tree_context = TreeContext(
-            hass, config[CONF_ENTITY_ID],
-            HassTimerHelper(hass, config[CONF_TIMER], self.on_event))
+            hass, entity_id,
+            HassTimerHelper(hass, config.get(CONF_TIMER, f'timer.{entity_id}'),
+                            self.on_event))
         asyncio.run_coroutine_threadsafe(
             tree_context.state_controller.async_set(DEFAULT_STATE), hass.loop)
-        self.dispatcher_tree = DispatcherTreeNode.create(
-            hass, config[CONF_BASE], tree_context)
+        self.dispatcher_tree = DispatcherTreeNode(config[CONF_BASE],
+                                                  tree_context)
         hass.services.register(DOMAIN, config[CONF_NAME], self.on_event)
 
     @homeassistant.core.callback
@@ -72,20 +81,20 @@ class ComplexController(object):
 
 
 class DispatcherTreeNode(object):
-    def get_condition_from_config(hass, condition_config):
-        return asyncio.run_coroutine_threadsafe(
-            homeassistant.helpers.condition.async_from_config(
-                tree_context.hass, condition_config), hass.loop).result()
-
     def __init__(self, config, tree_context):
+        def get_condition_from_config(condition_config):
+            return asyncio.run_coroutine_threadsafe(
+                homeassistant.helpers.condition.async_from_config(
+                    tree_context.hass, condition_config),
+                tree_context.hass.loop).result()
+
         condition_config = config.get(CONF_CONDITION)
         self.condition = get_condition_from_config(
-            tree_context.hass,
             condition_config) if condition_config is not None else lambda: true
 
-        dispatcher_config = config[CONF_CONFIG]
+        #dispatcher_config = config[CONF_CONFIG]
         handler_context = HandlerContext(
-            tree_context, SceneController(hass, dispatcher_config))
+            tree_context, SceneController(tree_context.hass, config))
 
         dispather_type = config[CONF_TYPE]
         if dispather_type == CONF_DISPATCHER_DIM:
@@ -98,7 +107,7 @@ class DispatcherTreeNode(object):
 
         self.children = list()
         for child in config.get(CONF_OVERRIDES, []):
-            self.children.append(DispatcherTreeNode(hass, child, tree_context))
+            self.children.append(DispatcherTreeNode(child, tree_context))
 
     def get_dispatcher(self):
         for child in children:
@@ -112,7 +121,10 @@ class HassTimerHelper(object):
         self.hass = hass
         self.entity_id = SplitId(entity_id)
         self.callback = callback
-        assert hass.setup_component(hass, 'timer', entity_id)
+        assert setup_component(hass, 'timer',
+                               {'timer': {
+                                   self.entity_id.name: {}
+                               }})
         self.remove_listener = hass.bus.listen('timer.finished',
                                                self.on_timer_finished)
 
@@ -187,7 +199,7 @@ class HandlerStrategyBase(object):
             event_types = [event_types]
         for state in states:
             for event_type in event_types:
-                self.handler_map[state, get_event_type(event)] = handler
+                self.handler_map[state, event_type] = handler
 
     def get_handler(self, state, event):
         return handler_map.get((state, get_event_type(event)))
@@ -251,13 +263,13 @@ class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
 
 def make_simple_dispatcher(config, handler_context):
     dispatcher = Dispatcher(handler_context)
-    dispatcher.add_strategy(ManualHandlerStrategy(config))
+    dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(SimpleMovementHandlerStrategy(config))
 
 
 def make_dim_dispatcher(config, handler_context):
     dispatcher = Dispatcher(handler_context)
-    dispatcher.add_strategy(ManualHandlerStrategy(config))
+    dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(DimMovementHandlerStrategy(config))
 
 
@@ -304,7 +316,7 @@ class SceneController(object):
 
 
 class SplitId(object):
-    def __ini__(self, entity_id):
+    def __init__(self, entity_id):
         assert (entity_id is not None)
         self.domain, self.name = homeassistant.core.split_entity_id(entity_id)
         self.full = entity_id
