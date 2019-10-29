@@ -1,36 +1,50 @@
 import asyncio
 import homeassistant.helpers.condition
-#import threading
+import voluptuous as vol
+import homeassistant.helpers.config_validation as cv
+from homeassistant.const import (CONF_CONDITION, CONF_ENTITY_ID, CONF_NAME,
+                                 CONF_TYPE, CONF_BASE)
 
-#from transitions import Machine
+from .const import *
 
-DOMAIN = 'complex_controller'
+BASE_SCHEMA = vol.Schema(
+    {
+        CONF_TYPE: vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM)),
+        CONF_CONFIG: {
+            CONF_SCENE_ON:
+            cv.entity_id,
+            vol.Optional(CONF_SCENE_DIM):
+            cv.entity_id,
+            CONF_SCENE_OFF:
+            cv.entity_id,
+            CONF_DURATION_ON:
+            vol.All(cv.time_period, cv.positive_timedelta),
+            vol.Optional(CONF_DURATION_DIM):
+            vol.All(cv.time_period, cv.positive_timedelta)
+        }
+    },
+    required=True)
 
-CONF_CONFIG = 'config'
-CONF_DISPATCHER_DIM = 'dim'
-CONF_DISPATCHER_SIMPLE = 'simple'
-CONF_DURATION_ON = 'duration_on'
-CONF_DURATION_DIM = 'duration_dim'
-CONF_OVERRIDES = 'overrides'
-CONF_SCENE_ON = 'scene_on'
-CONF_SCENE_DIM = 'scene_dim'
-CONF_SCENE_OFF = 'scene_off'
-CONF_TIMER = 'timer'
+OVERRIDER_SCHEMA = BASE_SCHEMA.extend({
+    CONF_CONDITION: cv.CONDITION_SCHEMA,
+    #vol.Optional(CONF_OVERRIDES): [vol.Self]
+    CONF_OVERRIDES: [vol.Self]
+})
 
-STATE_AUTO_ON = 'auto_on'
-STATE_MANUAL_ON = 'manual_on'
-STATE_DIM = 'dim'
-STATE_OFF = 'off'
-ALL_STATES = [STATE_AUTO_ON, STATE_MANUAL_ON, STATE_DIM, STATE_OFF]
-AUTO_CHANGEABLE_STATES = [STATE_AUTO_ON, STATE_DIM, STATE_OFF]
-DEFAULT_STATE = STATE_OFF
-
-EVENT_TYPE = 'type'  # <-- key in service call data dict, and below come values:
-EVENT_TYPE_TOGGLE = 'toggle'
-EVENT_TYPE_MANUAL_ON = 'manual_on'
-EVENT_TYPE_MANUAL_OFF = 'manual_off'
-EVENT_TYPE_MOVEMENT = 'movement'
-EVENT_TYPE_TIMER = 'timer'
+CONFIG_SCHEMA = vol.Schema(
+    {
+        DOMAIN: {
+            CONF_NAME:
+            cv.string,
+            vol.Optional(CONF_TIMER):
+            cv.string,
+            CONF_BASE:
+            BASE_SCHEMA.extend(
+                {vol.Optional(CONF_OVERRIDES): [OVERRIDER_SCHEMA]})
+        }
+    },
+    extra=vol.ALLOW_EXTRA,
+    required=True)
 
 
 def setup(hass, config):

@@ -1,0 +1,13 @@
+{
+  "domain": "complex_controller",
+  "name": "complex_controller",
+  "config_flow": false,
+  "documentation": "https://www.example.com",
+  "requirements": [],
+  "ssdp": {},
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": [
+    "@mboldyrev"
+  ]
+}
