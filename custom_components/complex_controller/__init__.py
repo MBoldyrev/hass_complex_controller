@@ -68,15 +68,15 @@ class ComplexController(object):
         tree_context = TreeContext(
             hass, entity_id,
             HassTimerHelper(hass, config.get(CONF_TIMER, f'timer.{entity_id}'),
-                            self.on_event))
+                            entity_id))
         asyncio.run_coroutine_threadsafe(
             tree_context.state_controller.async_set(DEFAULT_STATE), hass.loop)
         self.dispatcher_tree = DispatcherTreeNode(config[CONF_BASE],
                                                   tree_context)
-        hass.services.register(DOMAIN, config[CONF_NAME], self.on_event)
+        hass.services.register(DOMAIN, config[CONF_NAME], self.async_on_event)
 
-    @homeassistant.core.callback
-    def on_event(self, event):
+    #@homeassistant.core.callback
+    async def async_on_event(self, event):
         self.hass.loop.create_task(
             self.dispatcher_tree.get_dispatcher().dispatch(event))
 
@@ -123,10 +123,10 @@ class DispatcherTreeNode(object):
 
 
 class HassTimerHelper(object):
-    def __init__(self, hass, entity_id, callback):
+    def __init__(self, hass, entity_id, callback_service):
         self.hass = hass
         self.entity_id = SplitId(entity_id)
-        self.callback = callback
+        self.callback_service = SplitId(callback_service)
         assert setup_component(hass, 'timer',
                                {'timer': {
                                    self.entity_id.name: {}
@@ -138,20 +138,22 @@ class HassTimerHelper(object):
         self.remove_listener()
 
     async def async_schedule(self, delay):
-        await self.hass.services.async_call(
-            self.entity_id.domain, 'timer.start', {
-                ATTR_ENTITY_ID: self.entity_id.full,
-                'duration': delay
-            })
+        await self.hass.services.async_call('timer', 'start', {
+            ATTR_ENTITY_ID: self.entity_id.full,
+            'duration': delay
+        })
 
     async def async_cancel(self):
-        self.hass.services.async_call(self.entity_id.domain, 'timer.cancel',
-                                      {ATTR_ENTITY_ID: self.entity_id.full})
+        await self.hass.services.async_call(
+            'timer', 'cancel', {ATTR_ENTITY_ID: self.entity_id.full})
 
-    @homeassistant.core.callback
-    def on_timer_finished(self, event):
+    #@homeassistant.core.callback
+    async def on_timer_finished(self, event):
         if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
-            self.callback({EVENT_TYPE: EVENT_TYPE_TIMER})
+            await self.hass.services.async_call(self.callback_service.domain,
+                                                self.callback_service.name,
+                                                {EVENT_TYPE: EVENT_TYPE_TIMER})
+            #await self.callback({EVENT_TYPE: EVENT_TYPE_TIMER})
 
 
 def get_event_type(event):
@@ -227,7 +229,7 @@ class ManualHandlerStrategy(HandlerStrategyBase):
         await context.scene_controller.async_turn_on()
         await context.tree_context.state_controller.async_set(STATE_MANUAL_ON)
 
-    async def async_turn_off(self):
+    async def async_turn_off(self, context, current_state, event):
         await context.scene_controller.async_turn_off()
         await context.tree_context.state_controller.async_set(STATE_OFF)
 
@@ -244,7 +246,7 @@ class SimpleMovementHandlerStrategy(HandlerStrategyBase):
 
     async def async_turn_on(self, context, current_state, event):
         await context.scene_controller.async_turn_on()
-        await context.tree_context.timer.async_schedule(duration_on)
+        await context.tree_context.timer.async_schedule(self.duration_on)
         await context.tree_context.state_controller.async_set(STATE_AUTO_ON)
 
     async def async_turn_off(self, context, current_state, event):
@@ -264,7 +266,7 @@ class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
 
     async def async_turn_dim(self, context, current_state, event):
         await context.scene_controller.async_turn_dim()
-        await context.tree_context.timer.async_schedule(duration_dim)
+        await context.tree_context.timer.async_schedule(self.duration_dim)
         await context.tree_context.state_controller.async_set(STATE_DIM)
 
 
@@ -311,7 +313,7 @@ class SceneController(object):
     async def async_set_scene(self, scene_id):
         if scene_id is None:
             return
-        await self.hass.services.async_call(scene_id.domain, 'scene.turn_on',
+        await self.hass.services.async_call('scene', 'turn_on',
                                             {ATTR_ENTITY_ID: scene_id.full})
 
     async def async_turn_on(self):
