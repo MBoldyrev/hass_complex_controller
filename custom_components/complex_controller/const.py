@@ -2,9 +2,9 @@
 
 DOMAIN = 'complex_controller'
 
-CONF_CONFIG = 'config'
 CONF_DISPATCHER_DIM = 'dim'
 CONF_DISPATCHER_SIMPLE = 'simple'
+CONF_DISPATCHER_DUMMY = 'dummy'
 CONF_DURATION_ON = 'duration_on'
 CONF_DURATION_DIM = 'duration_dim'
 CONF_OVERRIDES = 'overrides'

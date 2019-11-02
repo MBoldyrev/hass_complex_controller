@@ -13,8 +13,11 @@ from .const import *
 
 BASE_SCHEMA = vol.Schema(
     {
-        CONF_TYPE:
-        vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM)),
+        vol.Optional(CONF_CONDITION):
+        cv.CONDITION_SCHEMA,
+        vol.Required(CONF_TYPE, default=CONF_DISPATCHER_DUMMY):
+        vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM,
+                CONF_DISPATCHER_DUMMY)),
         CONF_SCENE_ON:
         cv.entity_id,
         vol.Optional(CONF_SCENE_DIM):
@@ -36,15 +39,15 @@ OVERRIDER_SCHEMA = BASE_SCHEMA.extend({
 
 CONFIG_SCHEMA = vol.Schema(
     {
-        DOMAIN: {
+        DOMAIN: [{
             CONF_NAME:
             cv.string,
             vol.Optional(CONF_TIMER):
-            cv.string,
+            cv.entity_id,
             CONF_BASE:
             BASE_SCHEMA.extend(
                 {vol.Optional(CONF_OVERRIDES): [OVERRIDER_SCHEMA]})
-        }
+        }]
     },
     extra=vol.ALLOW_EXTRA,
     required=True)
@@ -56,8 +59,8 @@ _LOGGER = logging.getLogger(__name__)
 def setup(hass, config):
     """Set up the complex_controller integration."""
     # try/catch?
-    hass.states.set('complex_controller.test', f'hello there, my name is {config[DOMAIN][CONF_NAME]}')
-    components.append(ComplexController(hass, config[DOMAIN]))
+    for controller_config in config[DOMAIN]:
+        components.append(ComplexController(hass, controller_config))
     return True
 
 
@@ -77,8 +80,8 @@ class ComplexController(object):
 
     #@homeassistant.core.callback
     async def async_on_event(self, event):
-        self.hass.loop.create_task(
-            self.dispatcher_tree.get_dispatcher().dispatch(event))
+        #self.hass.loop.create_task(self.dispatcher_tree.async_dispatch(event))
+        await self.dispatcher_tree.async_dispatch(event)
 
 
 class DispatcherTreeNode(object):
@@ -86,8 +89,9 @@ class DispatcherTreeNode(object):
         def get_condition_from_config(condition_config):
             return asyncio.run_coroutine_threadsafe(
                 homeassistant.helpers.condition.async_from_config(
-                    tree_context.hass, condition_config),
-                tree_context.hass.loop).result()
+                    tree_context.hass,
+                    condition_config,
+                    config_validation=False), tree_context.hass.loop).result()
 
         condition_config = config.get(CONF_CONDITION)
         self._condition = get_condition_from_config(
@@ -95,7 +99,6 @@ class DispatcherTreeNode(object):
 
         self.tree_context = tree_context
 
-        #dispatcher_config = config[CONF_CONFIG]
         handler_context = HandlerContext(
             tree_context, SceneController(tree_context.hass, config))
 
@@ -104,6 +107,8 @@ class DispatcherTreeNode(object):
             self.dispatcher = make_dim_dispatcher(config, handler_context)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
             self.dispatcher = make_simple_dispatcher(config, handler_context)
+        elif dispather_type == CONF_DISPATCHER_DUMMY:
+            self.dispatcher = make_dummy_dispatcher(config, handler_context)
         else:
             raise (BaseException(
                 'Unknown dispatcher type: {}'.format(dispather_type)))
@@ -115,11 +120,13 @@ class DispatcherTreeNode(object):
     def check_condition(self):
         return self._condition(self.tree_context.hass)
 
-    def get_dispatcher(self):
-        for child in self.children:
-            if child.check_condition():
-                return child.get_dispatcher()
-        return self.dispatcher
+    async def async_dispatch(self, event):
+        if self.check_condition():
+            if not any(await asyncio.gather(*(child.async_dispatch(event)
+                                              for child in self.children))):
+                await self.dispatcher.async_dispatch(event)
+            return True
+        return False
 
 
 class HassTimerHelper(object):
@@ -182,7 +189,7 @@ class Dispatcher(object):
     def add_strategy(self, strategy):
         self.strategies.append(strategy)
 
-    async def dispatch(self, event):
+    async def async_dispatch(self, event):
         current_state = self.handler_context.tree_context.state_controller.get(
         ).state
         event_type = get_event_type(event)
@@ -192,7 +199,7 @@ class Dispatcher(object):
                 await self.handler_context.tree_context.timer.async_cancel()
                 await handler(self.handler_context, current_state, event)
                 return
-        _LOGGER.error(
+        _LOGGER.debug(
             'No handler registered for transition from {} on {}'.format(
                 state, get_event_type(event)))
 
@@ -281,6 +288,11 @@ def make_dim_dispatcher(config, handler_context):
     dispatcher = Dispatcher(handler_context)
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(DimMovementHandlerStrategy(config))
+    return dispatcher
+
+
+def make_dummy_dispatcher(config, handler_context):
+    dispatcher = Dispatcher(handler_context)
     return dispatcher
 
 
