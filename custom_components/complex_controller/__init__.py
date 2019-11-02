@@ -138,8 +138,8 @@ class HassTimerHelper(object):
                                {'timer': {
                                    self.entity_id.name: {}
                                }})
-        self.remove_listener = hass.bus.listen('timer.finished',
-                                               self.on_timer_finished)
+        self.remove_listener = hass.bus.async_listen('timer.finished',
+                                                     self.on_timer_finished)
 
     def __del__(self):
         self.remove_listener()
