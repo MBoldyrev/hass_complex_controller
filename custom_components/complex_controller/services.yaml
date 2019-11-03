@@ -1,0 +1,11 @@
+# Describes the format for available light services
+
+handle_event:
+  description: Request handling of an event.
+  fields:
+    entity_id:
+      description: Name of controller to handle the event.
+      example: "complex_controller.hallway"
+    type:
+      description: Type of the event.
+      example: 'movement'

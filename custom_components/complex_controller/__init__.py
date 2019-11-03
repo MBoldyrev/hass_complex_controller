@@ -6,8 +6,7 @@ import homeassistant.core
 import homeassistant.helpers.config_validation as cv
 from homeassistant.setup import setup_component
 from homeassistant.const import (ATTR_ENTITY_ID, CONF_CONDITION,
-                                 CONF_ENTITY_ID, CONF_NAME, CONF_TYPE,
-                                 CONF_BASE)
+                                 CONF_ENTITY_ID, CONF_TYPE, CONF_BASE)
 
 from .const import *
 
@@ -39,35 +38,62 @@ OVERRIDER_SCHEMA = BASE_SCHEMA.extend({
 
 CONFIG_SCHEMA = vol.Schema(
     {
-        DOMAIN: [{
-            CONF_NAME:
-            cv.string,
-            vol.Optional(CONF_TIMER):
-            cv.entity_id,
-            CONF_BASE:
-            BASE_SCHEMA.extend(
-                {vol.Optional(CONF_OVERRIDES): [OVERRIDER_SCHEMA]})
-        }]
+        DOMAIN: {
+            cv.string: {
+                vol.Optional(CONF_TIMER):
+                cv.entity_id,
+                CONF_BASE:
+                BASE_SCHEMA.extend(
+                    {vol.Optional(CONF_OVERRIDES): [OVERRIDER_SCHEMA]})
+            }
+        }
     },
     extra=vol.ALLOW_EXTRA,
     required=True)
 
-components = []
+SERVICE_HANDLE_EVENT_SCHEMA = vol.Schema(
+    {
+        ATTR_ENTITY_ID: cv.entity_id,
+        EVENT_TYPE: vol.In(ALL_EVENT_TYPES)
+    },
+    extra=vol.ALLOW_EXTRA,
+    required=True)
+
+controllers = dict()
 
 _LOGGER = logging.getLogger(__name__)
 
 def setup(hass, config):
     """Set up the complex_controller integration."""
     # try/catch?
-    for controller_config in config[DOMAIN]:
-        components.append(ComplexController(hass, controller_config))
+    for name, controller_config in config[DOMAIN].items():
+        controllers[f'{DOMAIN}.{name}'] = ComplexController(
+            hass, name, controller_config)
+
+    hass.services.register(DOMAIN,
+                           SERVICE_HANDLE_EVENT,
+                           async_on_handle_event,
+                           schema=SERVICE_HANDLE_EVENT_SCHEMA)
+
     return True
 
 
+#@homeassistant.core.callback
+async def async_on_handle_event(event):
+    controller_name = event.data[ATTR_ENTITY_ID]
+    controller = controllers.get(controller_name)
+    if controller is None:
+        _LOGGER.error(
+            f'Got service {SERVICE_HANDLE_EVENT} call with {ATTR_ENTITY_ID} = {controller_name} which is not set up!'
+        )
+        return
+    await controller.dispatcher_tree.async_dispatch(event)
+
+
 class ComplexController(object):
-    def __init__(self, hass, config):
+    def __init__(self, hass, name, config):
         self.hass = hass
-        entity_id = f'{DOMAIN}.{config[CONF_NAME]}'
+        entity_id = f'{DOMAIN}.{name}'
         tree_context = TreeContext(
             hass, entity_id,
             HassTimerHelper(hass, config.get(CONF_TIMER, f'timer.{entity_id}'),
@@ -76,7 +102,6 @@ class ComplexController(object):
             tree_context.state_controller.async_set(DEFAULT_STATE), hass.loop)
         self.dispatcher_tree = DispatcherTreeNode(config[CONF_BASE],
                                                   tree_context)
-        hass.services.register(DOMAIN, config[CONF_NAME], self.async_on_event)
 
     #@homeassistant.core.callback
     async def async_on_event(self, event):
@@ -157,9 +182,11 @@ class HassTimerHelper(object):
     #@homeassistant.core.callback
     async def on_timer_finished(self, event):
         if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
-            await self.hass.services.async_call(self.callback_service.domain,
-                                                self.callback_service.name,
-                                                {EVENT_TYPE: EVENT_TYPE_TIMER})
+            await self.hass.services.async_call(
+                DOMAIN, SERVICE_HANDLE_EVENT, {
+                    ATTR_ENTITY_ID: self.callback_service.full,
+                    EVENT_TYPE: EVENT_TYPE_TIMER
+                })
             #await self.callback({EVENT_TYPE: EVENT_TYPE_TIMER})
 
 
