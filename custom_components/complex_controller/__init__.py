@@ -4,7 +4,7 @@ import logging
 import voluptuous as vol
 import homeassistant.core
 import homeassistant.helpers.config_validation as cv
-from homeassistant.setup import setup_component
+from homeassistant.setup import async_setup_component
 from homeassistant.const import (ATTR_ENTITY_ID, CONF_CONDITION,
                                  CONF_ENTITY_ID, CONF_TYPE, CONF_BASE)
 
@@ -63,17 +63,17 @@ controllers = dict()
 
 _LOGGER = logging.getLogger(__name__)
 
-def setup(hass, config):
+async def async_setup(hass, config):
     """Set up the complex_controller integration."""
     # try/catch?
     for name, controller_config in config[DOMAIN].items():
-        controllers[f'{DOMAIN}.{name}'] = ComplexController(
+        controllers[f'{DOMAIN}.{name}'] = await ComplexController.create(
             hass, name, controller_config)
 
-    hass.services.register(DOMAIN,
-                           SERVICE_HANDLE_EVENT,
-                           async_on_handle_event,
-                           schema=SERVICE_HANDLE_EVENT_SCHEMA)
+    hass.services.async_register(DOMAIN,
+                                 SERVICE_HANDLE_EVENT,
+                                 async_on_handle_event,
+                                 schema=SERVICE_HANDLE_EVENT_SCHEMA)
 
     return True
 
@@ -91,56 +91,58 @@ async def async_on_handle_event(event):
 
 
 class ComplexController(object):
-    def __init__(self, hass, name, config):
-        self.hass = hass
+    @staticmethod
+    async def create(hass, name, config):
+        new_controller = ComplexController()
+        new_controller.hass = hass
         entity_id = f'{DOMAIN}.{name}'
         tree_context = TreeContext(
-            hass, entity_id,
-            HassTimerHelper(hass, config.get(CONF_TIMER, f'timer.{entity_id}'),
-                            entity_id))
-        asyncio.run_coroutine_threadsafe(
-            tree_context.state_controller.async_set(DEFAULT_STATE), hass.loop)
-        self.dispatcher_tree = DispatcherTreeNode(config[CONF_BASE],
-                                                  tree_context)
+            hass, entity_id, await HassTimerHelper.create(
+                hass, config.get(CONF_TIMER, f'timer.{entity_id}'), entity_id))
+        await tree_context.state_controller.async_set(DEFAULT_STATE)
+        new_controller.dispatcher_tree = await DispatcherTreeNode.create(
+            config[CONF_BASE], tree_context)
+        return new_controller
 
     #@homeassistant.core.callback
     async def async_on_event(self, event):
-        #self.hass.loop.create_task(self.dispatcher_tree.async_dispatch(event))
         await self.dispatcher_tree.async_dispatch(event)
 
 
 class DispatcherTreeNode(object):
-    def __init__(self, config, tree_context):
-        def get_condition_from_config(condition_config):
-            return asyncio.run_coroutine_threadsafe(
-                homeassistant.helpers.condition.async_from_config(
-                    tree_context.hass,
-                    condition_config,
-                    config_validation=False), tree_context.hass.loop).result()
+    @staticmethod
+    async def create(config, tree_context):
+        new_obj = DispatcherTreeNode()
+
+        async def get_condition_from_config(condition_config):
+            return await homeassistant.helpers.condition.async_from_config(
+                tree_context.hass, condition_config, config_validation=False)
 
         condition_config = config.get(CONF_CONDITION)
-        self._condition = get_condition_from_config(
+        new_obj._condition = await get_condition_from_config(
             condition_config) if condition_config is not None else lambda: true
 
-        self.tree_context = tree_context
+        new_obj.tree_context = tree_context
 
         handler_context = HandlerContext(
             tree_context, SceneController(tree_context.hass, config))
 
         dispather_type = config[CONF_TYPE]
         if dispather_type == CONF_DISPATCHER_DIM:
-            self.dispatcher = make_dim_dispatcher(config, handler_context)
+            new_obj.dispatcher = make_dim_dispatcher(config, handler_context)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
-            self.dispatcher = make_simple_dispatcher(config, handler_context)
+            new_obj.dispatcher = make_simple_dispatcher(config, handler_context)
         elif dispather_type == CONF_DISPATCHER_DUMMY:
-            self.dispatcher = make_dummy_dispatcher(config, handler_context)
+            new_obj.dispatcher = make_dummy_dispatcher(config, handler_context)
         else:
             raise (BaseException(
                 'Unknown dispatcher type: {}'.format(dispather_type)))
 
-        self.children = list()
+        new_obj.children = list()
         for child in config.get(CONF_OVERRIDES, []):
-            self.children.append(DispatcherTreeNode(child, tree_context))
+            new_obj.children.append(await DispatcherTreeNode.create(
+                child, tree_context))
+        return new_obj
 
     def check_condition(self):
         return self._condition(self.tree_context.hass)
@@ -155,16 +157,19 @@ class DispatcherTreeNode(object):
 
 
 class HassTimerHelper(object):
-    def __init__(self, hass, entity_id, callback_service):
-        self.hass = hass
-        self.entity_id = SplitId(entity_id)
-        self.callback_service = SplitId(callback_service)
-        assert setup_component(hass, 'timer',
-                               {'timer': {
-                                   self.entity_id.name: {}
-                               }})
-        self.remove_listener = hass.bus.async_listen('timer.finished',
-                                                     self.on_timer_finished)
+    @staticmethod
+    async def create(hass, entity_id, callback_service):
+        new_obj = HassTimerHelper()
+        new_obj.hass = hass
+        new_obj.entity_id = SplitId(entity_id)
+        new_obj.callback_service = SplitId(callback_service)
+        assert await async_setup_component(
+            hass, 'timer', {'timer': {
+                new_obj.entity_id.name: {}
+            }})
+        new_obj.remove_listener = hass.bus.async_listen(
+            'timer.finished', new_obj.on_timer_finished)
+        return new_obj
 
     def __del__(self):
         self.remove_listener()
