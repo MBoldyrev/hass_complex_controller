@@ -232,7 +232,7 @@ class Dispatcher(object):
                 return
         _LOGGER.debug(
             'No handler registered for transition from {} on {}'.format(
-                state, get_event_type(event)))
+                current_state, get_event_type(event)))
 
 
 class HandlerStrategyBase(object):
