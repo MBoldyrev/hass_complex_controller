@@ -2,15 +2,18 @@
 
 DOMAIN = 'complex_controller'
 
+CONF_ACTION_ON = 'action_on'
+CONF_ACTION_DIM = 'action_dim'
+CONF_ACTION_OFF = 'action_off'
 CONF_DISPATCHER_DIM = 'dim'
 CONF_DISPATCHER_SIMPLE = 'simple'
 CONF_DISPATCHER_DUMMY = 'dummy'
 CONF_DURATION_ON = 'duration_on'
 CONF_DURATION_DIM = 'duration_dim'
 CONF_OVERRIDES = 'overrides'
-CONF_SCENE_ON = 'scene_on'
-CONF_SCENE_DIM = 'scene_dim'
-CONF_SCENE_OFF = 'scene_off'
+CONF_SCENE = 'scene'
+CONF_SERVICE = 'service'
+CONF_SERVICE_DATA = 'service_data'
 CONF_TIMER = 'timer'
 
 STATE_AUTO_ON = 'auto_on'

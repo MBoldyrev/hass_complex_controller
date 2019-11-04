@@ -10,6 +10,19 @@ from homeassistant.const import (ATTR_ENTITY_ID, CONF_CONDITION,
 
 from .const import *
 
+ACTION_SERVICE_SCHEMA = vol.Schema(
+    {
+        CONF_SERVICE:
+        cv.entity_id,
+        vol.Required(CONF_SERVICE_DATA, default=dict()):
+        vol.Schema({}, extra=vol.ALLOW_EXTRA)
+    },
+    required=True)
+
+ACTION_SCENE_SCHEMA = vol.Schema({CONF_SCENE: cv.entity_id}, required=True)
+
+ACTION_SCHEMA = vol.Any(ACTION_SERVICE_SCHEMA, ACTION_SCENE_SCHEMA)
+
 BASE_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_CONDITION):
@@ -17,12 +30,12 @@ BASE_SCHEMA = vol.Schema(
         vol.Required(CONF_TYPE, default=CONF_DISPATCHER_DUMMY):
         vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM,
                 CONF_DISPATCHER_DUMMY)),
-        CONF_SCENE_ON:
-        cv.entity_id,
-        vol.Optional(CONF_SCENE_DIM):
-        cv.entity_id,
-        CONF_SCENE_OFF:
-        cv.entity_id,
+        vol.Optional(CONF_ACTION_ON):
+        ACTION_SCHEMA,
+        vol.Optional(CONF_ACTION_DIM):
+        ACTION_SCHEMA,
+        vol.Optional(CONF_ACTION_OFF):
+        ACTION_SCHEMA,
         CONF_DURATION_ON:
         vol.All(cv.time_period, cv.positive_timedelta),
         vol.Optional(CONF_DURATION_DIM):
@@ -62,6 +75,7 @@ SERVICE_HANDLE_EVENT_SCHEMA = vol.Schema(
 controllers = dict()
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup(hass, config):
     """Set up the complex_controller integration."""
@@ -125,13 +139,14 @@ class DispatcherTreeNode(object):
         new_obj.tree_context = tree_context
 
         handler_context = HandlerContext(
-            tree_context, SceneController(tree_context.hass, config))
+            tree_context, ActionController(tree_context.hass, config))
 
         dispather_type = config[CONF_TYPE]
         if dispather_type == CONF_DISPATCHER_DIM:
             new_obj.dispatcher = make_dim_dispatcher(config, handler_context)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
-            new_obj.dispatcher = make_simple_dispatcher(config, handler_context)
+            new_obj.dispatcher = make_simple_dispatcher(
+                config, handler_context)
         elif dispather_type == CONF_DISPATCHER_DUMMY:
             new_obj.dispatcher = make_dummy_dispatcher(config, handler_context)
         else:
@@ -261,7 +276,8 @@ class ManualHandlerStrategy(HandlerStrategyBase):
         self.set_handler([STATE_AUTO_ON, STATE_MANUAL_ON], EVENT_TYPE_TOGGLE,
                          self.async_turn_off)
         self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_ON, self.async_turn_on)
-        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF, self.async_turn_off)
+        self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF,
+                         self.async_turn_off)
 
     async def async_turn_on(self, context, current_state, event):
         await context.scene_controller.async_turn_on()
@@ -339,35 +355,66 @@ class StateController(object):
         return self.hass.states.get(self.entity_id)
 
 
-class SceneController(object):
+class ActionController(object):
+    class ServiceCaller(object):
+        def __init__(self, hass, config):
+            self.hass = hass
+            self.service = SplitId(config[CONF_SERVICE])
+            self.service_data = config[CONF_SERVICE_DATA]
+
+        async def act(self):
+            await self.hass.services.async_call(self.service.domain,
+                                                self.service.name,
+                                                self.service_data)
+
+    class SceneTurner(object):
+        def __init__(self, hass, config):
+            self.hass = hass
+            self.scene = config[CONF_SCENE]
+
+        async def act(self):
+            await self.hass.services.async_call('scene', 'turn_on',
+                                                {ATTR_ENTITY_ID: self.scene})
+
     def __init__(self, hass, config):
         self.hass = hass
 
-        def get_scene(conf_key):
-            entity_id = config.get(conf_key)
-            if entity_id is None:
+        def get_action(conf_key):
+            action_config = config.get(conf_key)
+            if action_config is None:
                 return None
-            return SplitId(entity_id)
+            elif check_schema(ACTION_SERVICE_SCHEMA, action_config):
+                return ActionController.ServiceCaller(hass, action_config)
+            elif check_schema(ACTION_SCENE_SCHEMA, action_config):
+                return ActionController.SceneTurner(hass, action_config)
+            _LOGGER.error(f'Cound not initialize action for {conf_key}.')
+            return None
 
-        self.scene_on = get_scene(CONF_SCENE_ON)
-        self.scene_dim = get_scene(CONF_SCENE_DIM)
-        self.scene_off = get_scene(CONF_SCENE_OFF)
+        self.action_on = get_action(CONF_ACTION_ON)
+        self.action_dim = get_action(CONF_ACTION_DIM)
+        self.action_off = get_action(CONF_ACTION_OFF)
 
-    async def async_set_scene(self, scene_id):
-        if scene_id is None:
+    async def async_do_action(self, action):
+        if action is None:
             return
-        await self.hass.services.async_call('scene', 'turn_on',
-                                            {ATTR_ENTITY_ID: scene_id.full})
+        await action.act()
 
     async def async_turn_on(self):
-        await self.async_set_scene(self.scene_on)
+        await self.async_do_action(self.action_on)
 
     async def async_turn_dim(self):
-        await self.async_set_scene(self.scene_dim)
+        await self.async_do_action(self.action_dim)
 
     async def async_turn_off(self):
-        await self.async_set_scene(self.scene_off)
+        await self.async_do_action(self.action_off)
 
+
+def check_schema(schema, value):
+    try:
+        schema(value)
+        return True
+    except vol.Invalid:
+        return False
 
 class SplitId(object):
     def __init__(self, entity_id):
