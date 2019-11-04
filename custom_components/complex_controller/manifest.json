@@ -6,7 +6,9 @@
   "requirements": [],
   "ssdp": {},
   "homekit": {},
-  "dependencies": [],
+  "dependencies": [
+    "scene"
+  ],
   "codeowners": [
     "@mboldyrev"
   ]
