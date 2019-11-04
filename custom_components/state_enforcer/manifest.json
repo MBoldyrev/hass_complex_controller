@@ -1,0 +1,13 @@
+{
+  "domain": "state_enforcer",
+  "name": "state_enforcer",
+  "config_flow": false,
+  "documentation": "https://www.example.com",
+  "requirements": [],
+  "ssdp": {},
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": [
+    "@mboldyrev"
+  ]
+}

@@ -1,0 +1,20 @@
+# Describes the format for available light services
+
+set_state:
+  description: Request setting a state.
+  fields:
+    entity_id:
+      description: Id of the entity to enforce on.
+      example: "light.hallway_1"
+    service:
+      description: Service to call to set the desired state.
+      example: 'light.turn_on'
+    service_data:
+      description: Service data.
+      example: 'entity_id: light.hallway_1'
+    state:
+      description: Desired state.
+      example: 'on'
+    state_attributes:
+      Description: Desired state attributes.
+      example: 'brightness: 255'
