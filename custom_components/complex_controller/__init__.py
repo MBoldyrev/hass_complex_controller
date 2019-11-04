@@ -137,7 +137,8 @@ class DispatcherTreeNode(object):
 
         condition_config = config.get(CONF_CONDITION)
         new_obj._condition = await get_condition_from_config(
-            condition_config) if condition_config is not None else lambda: true
+            condition_config
+        ) if condition_config is not None else lambda hass: True
 
         new_obj.tree_context = tree_context
 
