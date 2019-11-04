@@ -1,7 +1,7 @@
-# Describes the format for available light services
+# Describes the format for available state_enforcer services
 
 set_state:
-  description: Request setting a state.
+  description: Request setting a general state.
   fields:
     entity_id:
       description: Id of the entity to enforce on.
@@ -18,3 +18,18 @@ set_state:
     state_attributes:
       Description: Desired state attributes.
       example: 'brightness: 255'
+
+set_light:
+  description: set_state shortcut for light entities.
+  fields:
+    entity_id:
+      description: Id of the light entity to enforce on.
+      example: "light.hallway_1"
+    state:
+      description: Desired state (on/off).
+      example: 'on'
+    brightness:
+      Description: Desired brightness.
+      example: '255'
+
+
