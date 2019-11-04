@@ -3,9 +3,9 @@
 handle_event:
   description: Request handling of an event.
   fields:
-    entity_id:
+    controller:
       description: Name of controller to handle the event.
-      example: "complex_controller.hallway"
+      example: "hallway"
     type:
       description: Type of the event.
       example: 'movement'

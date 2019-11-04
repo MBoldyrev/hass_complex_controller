@@ -23,7 +23,8 @@ DEFAULT_STATE = STATE_OFF
 
 SERVICE_HANDLE_EVENT = 'handle_event'
 
-EVENT_TYPE = 'type'  # <-- key in service call data dict, and below come values:
+ATTR_CONTROLLER = 'controller'
+ATTR_EVENT_TYPE = 'type'  # <-- key in service call data dict, and below come values:
 EVENT_TYPE_TOGGLE = 'toggle'
 EVENT_TYPE_MANUAL_ON = 'manual_on'
 EVENT_TYPE_MANUAL_OFF = 'manual_off'

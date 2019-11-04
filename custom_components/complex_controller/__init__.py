@@ -53,8 +53,8 @@ CONFIG_SCHEMA = vol.Schema(
 
 SERVICE_HANDLE_EVENT_SCHEMA = vol.Schema(
     {
-        ATTR_ENTITY_ID: cv.entity_id,
-        EVENT_TYPE: vol.In(ALL_EVENT_TYPES)
+        ATTR_CONTROLLER: cv.string,
+        ATTR_EVENT_TYPE: vol.In(ALL_EVENT_TYPES)
     },
     extra=vol.ALLOW_EXTRA,
     required=True)
@@ -67,7 +67,7 @@ async def async_setup(hass, config):
     """Set up the complex_controller integration."""
     # try/catch?
     for name, controller_config in config[DOMAIN].items():
-        controllers[f'{DOMAIN}.{name}'] = await ComplexController.create(
+        controllers[name] = await ComplexController.create(
             hass, name, controller_config)
 
     hass.services.async_register(DOMAIN,
@@ -80,11 +80,11 @@ async def async_setup(hass, config):
 
 #@homeassistant.core.callback
 async def async_on_handle_event(event):
-    controller_name = event.data[ATTR_ENTITY_ID]
+    controller_name = event.data[ATTR_CONTROLLER]
     controller = controllers.get(controller_name)
     if controller is None:
         _LOGGER.error(
-            f'Got service {SERVICE_HANDLE_EVENT} call with {ATTR_ENTITY_ID} = {controller_name} which is not set up!'
+            f'Got service {SERVICE_HANDLE_EVENT} call with {ATTR_CONTROLLER} = {controller_name} which is not set up!'
         )
         return
     await controller.dispatcher_tree.async_dispatch(event)
@@ -98,7 +98,7 @@ class ComplexController(object):
         entity_id = f'{DOMAIN}.{name}'
         tree_context = TreeContext(
             hass, entity_id, await HassTimerHelper.create(
-                hass, config.get(CONF_TIMER, f'timer.{entity_id}'), entity_id))
+                hass, config.get(CONF_TIMER, f'timer.{entity_id}'), name))
         await tree_context.state_controller.async_set(DEFAULT_STATE)
         new_controller.dispatcher_tree = await DispatcherTreeNode.create(
             config[CONF_BASE], tree_context)
@@ -158,11 +158,11 @@ class DispatcherTreeNode(object):
 
 class HassTimerHelper(object):
     @staticmethod
-    async def create(hass, entity_id, callback_service):
+    async def create(hass, entity_id, controller_name):
         new_obj = HassTimerHelper()
         new_obj.hass = hass
         new_obj.entity_id = SplitId(entity_id)
-        new_obj.callback_service = SplitId(callback_service)
+        new_obj.controller_name = controller_name
         assert await async_setup_component(
             hass, 'timer', {'timer': {
                 new_obj.entity_id.name: {}
@@ -189,14 +189,13 @@ class HassTimerHelper(object):
         if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
             await self.hass.services.async_call(
                 DOMAIN, SERVICE_HANDLE_EVENT, {
-                    ATTR_ENTITY_ID: self.callback_service.full,
-                    EVENT_TYPE: EVENT_TYPE_TIMER
+                    ATTR_CONTROLLER: self.controller_name,
+                    ATTR_EVENT_TYPE: EVENT_TYPE_TIMER
                 })
-            #await self.callback({EVENT_TYPE: EVENT_TYPE_TIMER})
 
 
 def get_event_type(event):
-    return event.data[EVENT_TYPE]
+    return event.data[ATTR_EVENT_TYPE]
 
 
 class TreeContext(object):
