@@ -19,10 +19,13 @@ CONFIG_SCHEMA = vol.Schema({DOMAIN: [cv.entity_id]}, extra=vol.ALLOW_EXTRA)
 
 LIGHT_SERVICES = {STATE_ON: 'light.turn_on', STATE_OFF: 'light.turn_off'}
 
+ONE_OR_MANY_ENTITIES_TO_LIST = vol.Any([cv.entity_id],
+                                       vol.All(cv.entity_id, lambda e: [e]))
+
 SERVICE_SET_STATE_SCHEMA = vol.Schema(
     {
         ATTR_ENTITY_ID: cv.entity_id,
-        ATTR_SERVICE: cv.entity_id,
+        ATTR_SERVICE: ONE_OR_MANY_ENTITIES_TO_LIST,
         vol.Optional(ATTR_SERVICE_DATA): dict(),
         ATTR_STATE: cv.string,
         vol.Optional(ATTR_STATE_ATTRIBUTES): dict()
@@ -32,7 +35,7 @@ SERVICE_SET_STATE_SCHEMA = vol.Schema(
 
 SERVICE_SET_LIGHT_SCHEMA = vol.Schema(
     {
-        ATTR_ENTITY_ID: cv.entity_id,
+        ATTR_ENTITY_ID: ONE_OR_MANY_ENTITIES_TO_LIST,
         ATTR_STATE: vol.In(LIGHT_SERVICES),
         vol.Optional(ATTR_BRIGHTNESS): int
     },
@@ -63,14 +66,17 @@ async def async_setup(hass, config):
 
 def register_service_handler(hass, service_name, handler, schema):
     async def service_handler_wrapper(event):
-        entity_id = event.data[ATTR_ENTITY_ID]
-        state_enforcer = state_enforcers.get(entity_id)
-        if state_enforcer is None:
-            _LOGGER.error(f'Got service {service_name} call '
-                          f'with {ATTR_ENTITY_ID} = {entity_id} '
-                          'which is not set up!')
-            return
-        await handler(state_enforcer, event)
+        selected_enforcers = []
+        for entity_id in event.data[ATTR_ENTITY_ID]:
+            state_enforcer = state_enforcers.get(entity_id)
+            if state_enforcer is None:
+                _LOGGER.error(f'Got service {service_name} call '
+                              f'with {ATTR_ENTITY_ID} = {entity_id} '
+                              'which is not set up!')
+            else:
+                selected_enforcers.append(state_enforcer)
+        await asyncio.gather(*(handler(state_enforcer, event)
+                               for state_enforcer in selected_enforcers))
 
     hass.services.async_register(DOMAIN,
                                  service_name,
