@@ -40,7 +40,17 @@ hallway:
           before: '12:00:00'
         type: simple
         action_on:
-            service: script.hallway_enforce_night_on
+          - service: state_enforcer.set_light
+            service_data:
+              entity_id:
+                - light.hallway_2
+                - light.hallway_3
+              state: 'on'
+              brightness: 1
+          - service: state_enforcer.set_light
+            service_data:
+              entity_id: light.hallway_1
+              state: 'off'
         action_off:
           service: state_enforcer.set_light
           service_data:

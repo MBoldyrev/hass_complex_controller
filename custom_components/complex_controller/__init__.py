@@ -23,6 +23,9 @@ ACTION_SCENE_SCHEMA = vol.Schema({CONF_SCENE: cv.entity_id}, required=True)
 
 ACTION_SCHEMA = vol.Any(ACTION_SERVICE_SCHEMA, ACTION_SCENE_SCHEMA)
 
+ONE_OR_MANY_ACTIONS_TO_LIST = vol.Any([ACTION_SCHEMA],
+                                      vol.All(ACTION_SCHEMA, lambda a: [a]))
+
 BASE_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_CONDITION):
@@ -30,12 +33,12 @@ BASE_SCHEMA = vol.Schema(
         vol.Required(CONF_TYPE, default=CONF_DISPATCHER_DUMMY):
         vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM,
                 CONF_DISPATCHER_DUMMY)),
-        vol.Optional(CONF_ACTION_ON):
-        ACTION_SCHEMA,
-        vol.Optional(CONF_ACTION_DIM):
-        ACTION_SCHEMA,
-        vol.Optional(CONF_ACTION_OFF):
-        ACTION_SCHEMA,
+        vol.Required(CONF_ACTIONS_ON, default=[]):
+        ONE_OR_MANY_ACTIONS_TO_LIST,
+        vol.Required(CONF_ACTIONS_DIM, default=[]):
+        ONE_OR_MANY_ACTIONS_TO_LIST,
+        vol.Required(CONF_ACTIONS_OFF, default=[]):
+        ONE_OR_MANY_ACTIONS_TO_LIST,
         CONF_DURATION_ON:
         vol.All(cv.time_period, cv.positive_timedelta),
         vol.Optional(CONF_DURATION_DIM):
@@ -379,34 +382,36 @@ class ActionController(object):
     def __init__(self, hass, config):
         self.hass = hass
 
-        def get_action(conf_key):
-            action_config = config.get(conf_key)
-            if action_config is None:
-                return None
-            elif check_schema(ACTION_SERVICE_SCHEMA, action_config):
-                return ActionController.ServiceCaller(hass, action_config)
-            elif check_schema(ACTION_SCENE_SCHEMA, action_config):
-                return ActionController.SceneTurner(hass, action_config)
-            _LOGGER.error(f'Cound not initialize action for {conf_key}.')
-            return None
+        def get_actions(conf_key):
+            action_configs = config.get(conf_key)
+            actions = []
+            for action_config in action_configs:
+                if check_schema(ACTION_SERVICE_SCHEMA, action_config):
+                    actions.append(
+                        ActionController.ServiceCaller(hass, action_config))
+                elif check_schema(ACTION_SCENE_SCHEMA, action_config):
+                    actions.append(
+                        ActionController.SceneTurner(hass, action_config))
+                else:
+                    _LOGGER.error(
+                        f'Cound not initialize action for {conf_key}.')
+            return actions
 
-        self.action_on = get_action(CONF_ACTION_ON)
-        self.action_dim = get_action(CONF_ACTION_DIM)
-        self.action_off = get_action(CONF_ACTION_OFF)
+        self.actions_on = get_actions(CONF_ACTIONS_ON)
+        self.actions_dim = get_actions(CONF_ACTIONS_DIM)
+        self.actions_off = get_actions(CONF_ACTIONS_OFF)
 
-    async def async_do_action(self, action):
-        if action is None:
-            return
-        await action.act()
+    async def async_do_actions(self, actions):
+        await asyncio.gather(*(action.act() for action in actions))
 
     async def async_turn_on(self):
-        await self.async_do_action(self.action_on)
+        await self.async_do_actions(self.actions_on)
 
     async def async_turn_dim(self):
-        await self.async_do_action(self.action_dim)
+        await self.async_do_actions(self.actions_dim)
 
     async def async_turn_off(self):
-        await self.async_do_action(self.action_off)
+        await self.async_do_actions(self.actions_off)
 
 
 def check_schema(schema, value):

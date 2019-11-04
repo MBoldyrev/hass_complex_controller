@@ -2,9 +2,9 @@
 
 DOMAIN = 'complex_controller'
 
-CONF_ACTION_ON = 'action_on'
-CONF_ACTION_DIM = 'action_dim'
-CONF_ACTION_OFF = 'action_off'
+CONF_ACTIONS_ON = 'action_on'
+CONF_ACTIONS_DIM = 'action_dim'
+CONF_ACTIONS_OFF = 'action_off'
 CONF_DISPATCHER_DIM = 'dim'
 CONF_DISPATCHER_SIMPLE = 'simple'
 CONF_DISPATCHER_DUMMY = 'dummy'
