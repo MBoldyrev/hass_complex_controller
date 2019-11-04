@@ -24,8 +24,8 @@ ONE_OR_MANY_ENTITIES_TO_LIST = vol.Any([cv.entity_id],
 
 SERVICE_SET_STATE_SCHEMA = vol.Schema(
     {
-        ATTR_ENTITY_ID: cv.entity_id,
-        ATTR_SERVICE: ONE_OR_MANY_ENTITIES_TO_LIST,
+        ATTR_ENTITY_ID: ONE_OR_MANY_ENTITIES_TO_LIST,
+        ATTR_SERVICE: cv.entity_id,
         vol.Optional(ATTR_SERVICE_DATA): dict(),
         ATTR_STATE: cv.string,
         vol.Optional(ATTR_STATE_ATTRIBUTES): dict()
