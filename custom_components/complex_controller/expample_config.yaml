@@ -1,0 +1,52 @@
+hallway:
+  timer: timer.hallway_timer
+  base:
+    condition:
+      condition: template
+      value_template: "{{ state_attr('sun.sun', 'elevation') < 85 }}"
+    type: dim
+    action_on:
+      service: state_enforcer.set_light
+      service_data:
+        entity_id:
+          - light.hallway_1
+          - light.hallway_2
+          - light.hallway_3
+        state: 'on'
+        brightness: 255
+    action_dim:
+      service: state_enforcer.set_light
+      service_data:
+        entity_id:
+          - light.hallway_1
+          - light.hallway_2
+          - light.hallway_3
+        state: 'on'
+        brightness: 1
+    action_off:
+      service: state_enforcer.set_light
+      service_data:
+        entity_id:
+          - light.hallway_1
+          - light.hallway_2
+          - light.hallway_3
+        state: 'off'
+    duration_on: 10
+    duration_dim: 10
+    overrides:
+      - condition:
+          condition: time
+          after: '23:00:00'
+          before: '12:00:00'
+        type: simple
+        action_on:
+            service: script.hallway_enforce_night_on
+        action_off:
+          service: state_enforcer.set_light
+          service_data:
+            entity_id:
+              - light.hallway_1
+              - light.hallway_2
+              - light.hallway_3
+            state: 'off'
+        duration_on: 10
