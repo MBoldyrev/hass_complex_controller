@@ -118,6 +118,7 @@ class StateEnforcer(object):
         new_obj = StateEnforcer()
         new_obj.hass = hass
         new_obj.entity_id = entity_id
+        new_obj.logger = logging.getLogger(f'{__name__}.{entity_id}')
 
         new_obj.service = None
         new_obj.service_data = dict()
@@ -135,23 +136,36 @@ class StateEnforcer(object):
         self.state = state
         self.state_attrs = state_attrs
         self.retry_number = 0
+        self.logger.debug(f'Set enforsing: '
+                     f'service={self.service} '
+                     f'service_data={self.service_data} '
+                     f'state={self.state} '
+                     f'state_attrs={self.state_attrs} ')
         await self.enforce()
 
     async def check_current_state(self):
         current_state = self.hass.states.get(self.entity_id)
         if self.state is None:
+            self.logger.debug('Ignoring call to check_current_state '
+                              'because the enforced state is not set yet.')
             return
         if current_state.state != self.state or any(
                 current_state.attributes.get(k) != v
                 for k, v in self.state_attrs.items()):
             self.retry_number += 1
+            self.logger.debug(
+                f'Current state {current_state} does not match '
+                f'enforced state {self.state} {self.state_attrs}. '
+                f'Retrying service call (#{self.retry_number})')
             await self.enforce()
+        else:
+            self.logger.debug('check_current_state(): states match!')
 
     async def enforce(self):
         if self.service is None:
-            _LOGGER.error(
-                f'Cannot enforce state {self.state} with attrs {self.state_attrs} because the service call is not set.'
-            )
+            self.logger.error(f'Cannot enforce state {self.state} '
+                              f'with attrs {self.state_attrs} because '
+                              'the service call is not set.')
         await self.hass.services.async_call(self.service.domain,
                                             self.service.name,
                                             self.service_data)
