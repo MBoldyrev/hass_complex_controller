@@ -121,10 +121,6 @@ class ComplexController(object):
             config[CONF_BASE], tree_context)
         return new_controller
 
-    #@homeassistant.core.callback
-    async def async_on_event(self, event):
-        await self.dispatcher_tree.async_dispatch(event)
-
 
 class DispatcherTreeNode(object):
     @staticmethod
