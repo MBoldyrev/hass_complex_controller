@@ -48,7 +48,6 @@ BASE_SCHEMA = vol.Schema(
 
 OVERRIDER_SCHEMA = BASE_SCHEMA.extend({
     CONF_CONDITION: cv.CONDITION_SCHEMA,
-    #vol.Optional(CONF_OVERRIDES): [vol.Self]
     CONF_OVERRIDES: [vol.Self]
 })
 
@@ -114,13 +113,15 @@ class ComplexController(object):
     async def create(hass, name, config):
         new_controller = ComplexController()
         new_controller.hass = hass
+        logger = _LOGGER.getChild(name)
         entity_id = f'{DOMAIN}.{name}'
-        tree_context = TreeContext(
-            hass, entity_id, await HassTimerHelper.create(
-                hass, config.get(CONF_TIMER, f'timer.{entity_id}'), name))
+        timer_helper = await HassTimerHelper.create(
+            hass, config.get(CONF_TIMER, f'timer.{entity_id}'), name,
+            logger.getChild('timer_helper'))
+        tree_context = TreeContext(hass, entity_id, timer_helper)
         await tree_context.state_controller.async_set(DEFAULT_STATE)
         new_controller.dispatcher_tree = await DispatcherTreeNode.create(
-            config[CONF_BASE], tree_context, _LOGGER.getChild(name))
+            config[CONF_BASE], tree_context, logger)
         return new_controller
 
 
@@ -141,20 +142,18 @@ class DispatcherTreeNode(object):
         new_obj.tree_context = tree_context
         new_obj.logger = logger
 
-        handler_context = HandlerContext(
+        dispather_type = config[CONF_TYPE]
+        new_obj.dispatcher = Dispatcher(
             tree_context,
             ActionController(tree_context.hass, config,
-                             logger.getChild('Action')))
-
-        dispather_type = config[CONF_TYPE]
+                             logger.getChild('Action')),
+            logger.getChild(dispather_type))
         if dispather_type == CONF_DISPATCHER_DIM:
-            new_obj.dispatcher = make_dim_dispatcher(config, handler_context, logger)
+            make_dim_dispatcher(new_obj.dispatcher, config, logger)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
-            new_obj.dispatcher = make_simple_dispatcher(
-                config, handler_context, logger)
+            make_simple_dispatcher(new_obj.dispatcher, config, logger)
         elif dispather_type == CONF_DISPATCHER_DUMMY:
-            new_obj.dispatcher = make_dummy_dispatcher(config, handler_context,
-                                                       logger)
+            pass
         else:
             raise (BaseException(
                 'Unknown dispatcher type: {}'.format(dispather_type)))
@@ -183,11 +182,14 @@ class DispatcherTreeNode(object):
 
 class HassTimerHelper(object):
     @staticmethod
-    async def create(hass, entity_id, controller_name):
+    async def create(hass, entity_id, controller_name, logger):
         new_obj = HassTimerHelper()
         new_obj.hass = hass
         new_obj.entity_id = SplitId(entity_id)
         new_obj.controller_name = controller_name
+        new_obj.logger = logger
+        new_obj.enrollee = None
+
         assert await async_setup_component(
             hass, 'timer', {'timer': {
                 new_obj.entity_id.name: {}
@@ -199,7 +201,8 @@ class HassTimerHelper(object):
     def __del__(self):
         self.remove_listener()
 
-    async def async_schedule(self, delay):
+    async def async_schedule(self, delay, enrollee: 'Dispatcher'):
+        self.enrollee = enrollee
         await self.hass.services.async_call('timer', 'start', {
             ATTR_ENTITY_ID: self.entity_id.full,
             'duration': delay
@@ -208,15 +211,22 @@ class HassTimerHelper(object):
     async def async_cancel(self):
         await self.hass.services.async_call(
             'timer', 'cancel', {ATTR_ENTITY_ID: self.entity_id.full})
+        self.enrollee = None
 
-    #@homeassistant.core.callback
     async def on_timer_finished(self, event):
         if event.data[ATTR_ENTITY_ID] == self.entity_id.full:
-            await self.hass.services.async_call(
-                DOMAIN, SERVICE_HANDLE_EVENT, {
+            if self.enrollee is None:
+                self.logger.error(
+                    'Got a timer finished event, but have no enrollee!')
+                return
+            event = homeassistant.core.Event(
+                SERVICE_HANDLE_EVENT, {
                     ATTR_CONTROLLER: self.controller_name,
                     ATTR_EVENT_TYPE: EVENT_TYPE_TIMER
                 })
+            current_enrollee = self.enrollee
+            self.enrollee = None
+            await current_enrollee.async_dispatch(event)
 
 
 def get_event_type(event):
@@ -238,8 +248,9 @@ class HandlerContext(object):
 
 
 class Dispatcher(object):
-    def __init__(self, handler_context, logger):
-        self.handler_context = handler_context
+    def __init__(self, tree_context, scene_controller, logger):
+        self.tree_context = tree_context
+        self.scene_controller = scene_controller
         self.logger = logger
         self.strategies = list()
 
@@ -247,14 +258,14 @@ class Dispatcher(object):
         self.strategies.append(strategy)
 
     async def async_dispatch(self, event):
-        current_state = self.handler_context.tree_context.state_controller.get(
+        current_state = self.tree_context.state_controller.get(
         ).state
         event_type = get_event_type(event)
         for strategy in self.strategies:
             handler = strategy.get_handler(current_state, event_type)
             if handler is not None:
-                await self.handler_context.tree_context.timer.async_cancel()
-                await handler(self.handler_context, current_state, event)
+                await self.tree_context.timer.async_cancel()
+                await handler(self, current_state, event)
                 return
         self.logger.debug(
             'No handler registered for transition from {} on {}'.format(
@@ -290,13 +301,14 @@ class ManualHandlerStrategy(HandlerStrategyBase):
         self.set_handler(ALL_STATES, EVENT_TYPE_MANUAL_OFF,
                          self.async_turn_off)
 
-    async def async_turn_on(self, context, current_state, event):
-        await context.scene_controller.async_turn_on()
-        await context.tree_context.state_controller.async_set(STATE_MANUAL_ON)
+    async def async_turn_on(self, dispatcher, current_state, event):
+        await dispatcher.scene_controller.async_turn_on()
+        await dispatcher.tree_context.state_controller.async_set(
+            STATE_MANUAL_ON)
 
-    async def async_turn_off(self, context, current_state, event):
-        await context.scene_controller.async_turn_off()
-        await context.tree_context.state_controller.async_set(STATE_OFF)
+    async def async_turn_off(self, dispatcher, current_state, event):
+        await dispatcher.scene_controller.async_turn_off()
+        await dispatcher.tree_context.state_controller.async_set(STATE_OFF)
 
 
 class SimpleMovementHandlerStrategy(HandlerStrategyBase):
@@ -309,14 +321,15 @@ class SimpleMovementHandlerStrategy(HandlerStrategyBase):
         self.set_handler(AUTO_CHANGEABLE_STATES, EVENT_TYPE_TIMER,
                          self.async_turn_off)
 
-    async def async_turn_on(self, context, current_state, event):
-        await context.scene_controller.async_turn_on()
-        await context.tree_context.timer.async_schedule(self.duration_on)
-        await context.tree_context.state_controller.async_set(STATE_AUTO_ON)
+    async def async_turn_on(self, dispatcher, current_state, event):
+        await dispatcher.scene_controller.async_turn_on()
+        await dispatcher.tree_context.timer.async_schedule(
+            self.duration_on, dispatcher)
+        await dispatcher.tree_context.state_controller.async_set(STATE_AUTO_ON)
 
-    async def async_turn_off(self, context, current_state, event):
-        await context.scene_controller.async_turn_off()
-        await context.tree_context.state_controller.async_set(STATE_OFF)
+    async def async_turn_off(self, dispatcher, current_state, event):
+        await dispatcher.scene_controller.async_turn_off()
+        await dispatcher.tree_context.state_controller.async_set(STATE_OFF)
 
 
 class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
@@ -329,31 +342,22 @@ class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
         self.set_handler(STATE_AUTO_ON, EVENT_TYPE_TIMER, self.async_turn_dim)
         self.set_handler(STATE_DIM, EVENT_TYPE_TIMER, self.async_turn_off)
 
-    async def async_turn_dim(self, context, current_state, event):
-        await context.scene_controller.async_turn_dim()
-        await context.tree_context.timer.async_schedule(self.duration_dim)
-        await context.tree_context.state_controller.async_set(STATE_DIM)
+    async def async_turn_dim(self, dispatcher, current_state, event):
+        await dispatcher.scene_controller.async_turn_dim()
+        await dispatcher.tree_context.timer.async_schedule(
+            self.duration_dim, dispatcher)
+        await dispatcher.tree_context.state_controller.async_set(STATE_DIM)
 
 
-def make_simple_dispatcher(config, handler_context, base_logger):
-    dispatcher = Dispatcher(handler_context,
-                            base_logger.getChild('SimpleDispatcher'))
+def make_simple_dispatcher(dispatcher, config, base_logger):
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(SimpleMovementHandlerStrategy(config))
     return dispatcher
 
 
-def make_dim_dispatcher(config, handler_context, base_logger):
-    dispatcher = Dispatcher(handler_context,
-                            base_logger.getChild('DimDispatcher'))
+def make_dim_dispatcher(dispatcher, config, base_logger):
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(DimMovementHandlerStrategy(config))
-    return dispatcher
-
-
-def make_dummy_dispatcher(config, handler_context, base_logger):
-    dispatcher = Dispatcher(handler_context,
-                            base_logger.getChild('DummyDispatcher'))
     return dispatcher
 
 
