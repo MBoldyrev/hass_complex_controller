@@ -118,7 +118,7 @@ class StateEnforcer(object):
         new_obj = StateEnforcer()
         new_obj.hass = hass
         new_obj.entity_id = entity_id
-        new_obj.logger = logging.getLogger(f'{__name__}.{entity_id}')
+        new_obj.logger = _LOGGER.getChild(entity_id)
 
         new_obj.service = None
         new_obj.service_data = dict()

@@ -104,7 +104,9 @@ async def async_on_handle_event(event):
             f'Got service {SERVICE_HANDLE_EVENT} call with {ATTR_CONTROLLER} = {controller_name} which is not set up!'
         )
         return
-    await controller.dispatcher_tree.async_dispatch(event)
+    if not await controller.dispatcher_tree.async_dispatch(event):
+        _LOGGER.debug(
+            f'Event was not dispatched by {controller_name}: {event}')
 
 
 class ComplexController(object):
@@ -118,13 +120,13 @@ class ComplexController(object):
                 hass, config.get(CONF_TIMER, f'timer.{entity_id}'), name))
         await tree_context.state_controller.async_set(DEFAULT_STATE)
         new_controller.dispatcher_tree = await DispatcherTreeNode.create(
-            config[CONF_BASE], tree_context)
+            config[CONF_BASE], tree_context, _LOGGER.getChild(name))
         return new_controller
 
 
 class DispatcherTreeNode(object):
     @staticmethod
-    async def create(config, tree_context):
+    async def create(config, tree_context, logger):
         new_obj = DispatcherTreeNode()
 
         async def get_condition_from_config(condition_config):
@@ -137,26 +139,30 @@ class DispatcherTreeNode(object):
         ) if condition_config is not None else lambda hass: True
 
         new_obj.tree_context = tree_context
+        new_obj.logger = logger
 
         handler_context = HandlerContext(
-            tree_context, ActionController(tree_context.hass, config))
+            tree_context,
+            ActionController(tree_context.hass, config,
+                             logger.getChild('Action')))
 
         dispather_type = config[CONF_TYPE]
         if dispather_type == CONF_DISPATCHER_DIM:
-            new_obj.dispatcher = make_dim_dispatcher(config, handler_context)
+            new_obj.dispatcher = make_dim_dispatcher(config, handler_context, logger)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
             new_obj.dispatcher = make_simple_dispatcher(
-                config, handler_context)
+                config, handler_context, logger)
         elif dispather_type == CONF_DISPATCHER_DUMMY:
-            new_obj.dispatcher = make_dummy_dispatcher(config, handler_context)
+            new_obj.dispatcher = make_dummy_dispatcher(config, handler_context,
+                                                       logger)
         else:
             raise (BaseException(
                 'Unknown dispatcher type: {}'.format(dispather_type)))
 
         new_obj.children = list()
-        for child in config.get(CONF_OVERRIDES, []):
+        for i, child in enumerate(config.get(CONF_OVERRIDES, [])):
             new_obj.children.append(await DispatcherTreeNode.create(
-                child, tree_context))
+                child, tree_context, logger.getChild(f'{i}')))
         return new_obj
 
     def check_condition(self):
@@ -166,8 +172,12 @@ class DispatcherTreeNode(object):
         if self.check_condition():
             if not any(await asyncio.gather(*(child.async_dispatch(event)
                                               for child in self.children))):
+                if len(self.children) > 0:
+                    self.logger.debug('No children could dispatch event.')
+                self.logger.debug('I dispatch the event.')
                 await self.dispatcher.async_dispatch(event)
             return True
+        self.logger.debug('My condition does not match the event.')
         return False
 
 
@@ -228,8 +238,9 @@ class HandlerContext(object):
 
 
 class Dispatcher(object):
-    def __init__(self, handler_context):
+    def __init__(self, handler_context, logger):
         self.handler_context = handler_context
+        self.logger = logger
         self.strategies = list()
 
     def add_strategy(self, strategy):
@@ -245,7 +256,7 @@ class Dispatcher(object):
                 await self.handler_context.tree_context.timer.async_cancel()
                 await handler(self.handler_context, current_state, event)
                 return
-        _LOGGER.debug(
+        self.logger.debug(
             'No handler registered for transition from {} on {}'.format(
                 current_state, get_event_type(event)))
 
@@ -324,22 +335,25 @@ class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
         await context.tree_context.state_controller.async_set(STATE_DIM)
 
 
-def make_simple_dispatcher(config, handler_context):
-    dispatcher = Dispatcher(handler_context)
+def make_simple_dispatcher(config, handler_context, base_logger):
+    dispatcher = Dispatcher(handler_context,
+                            base_logger.getChild('SimpleDispatcher'))
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(SimpleMovementHandlerStrategy(config))
     return dispatcher
 
 
-def make_dim_dispatcher(config, handler_context):
-    dispatcher = Dispatcher(handler_context)
+def make_dim_dispatcher(config, handler_context, base_logger):
+    dispatcher = Dispatcher(handler_context,
+                            base_logger.getChild('DimDispatcher'))
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(DimMovementHandlerStrategy(config))
     return dispatcher
 
 
-def make_dummy_dispatcher(config, handler_context):
-    dispatcher = Dispatcher(handler_context)
+def make_dummy_dispatcher(config, handler_context, base_logger):
+    dispatcher = Dispatcher(handler_context,
+                            base_logger.getChild('DummyDispatcher'))
     return dispatcher
 
 
@@ -376,8 +390,9 @@ class ActionController(object):
             await self.hass.services.async_call('scene', 'turn_on',
                                                 {ATTR_ENTITY_ID: self.scene})
 
-    def __init__(self, hass, config):
+    def __init__(self, hass, config, logger):
         self.hass = hass
+        self.logger = logger
 
         def get_actions(conf_key):
             action_configs = config.get(conf_key)
@@ -390,7 +405,7 @@ class ActionController(object):
                     actions.append(
                         ActionController.SceneTurner(hass, action_config))
                 else:
-                    _LOGGER.error(
+                    self.logger.error(
                         f'Cound not initialize action for {conf_key}.')
             return actions
 
