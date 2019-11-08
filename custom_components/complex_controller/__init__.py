@@ -205,7 +205,7 @@ class HassTimerHelper(object):
         self.enrollee = enrollee
         await self.hass.services.async_call('timer', 'start', {
             ATTR_ENTITY_ID: self.entity_id.full,
-            'duration': delay
+            'duration': str(delay)
         })
 
     async def async_cancel(self):
