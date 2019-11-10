@@ -32,7 +32,7 @@ BASE_SCHEMA = vol.Schema(
         cv.CONDITION_SCHEMA,
         vol.Required(CONF_TYPE, default=CONF_DISPATCHER_DUMMY):
         vol.In((CONF_DISPATCHER_SIMPLE, CONF_DISPATCHER_DIM,
-                CONF_DISPATCHER_DUMMY)),
+                CONF_DISPATCHER_MANUAL, CONF_DISPATCHER_DUMMY)),
         vol.Required(CONF_ACTIONS_ON, default=[]):
         ONE_OR_MANY_ACTIONS_TO_LIST,
         vol.Required(CONF_ACTIONS_DIM, default=[]):
@@ -149,9 +149,11 @@ class DispatcherTreeNode(object):
                              logger.getChild('Action')),
             logger.getChild(dispather_type))
         if dispather_type == CONF_DISPATCHER_DIM:
-            make_dim_dispatcher(new_obj.dispatcher, config, logger)
+            make_dim_dispatcher(new_obj.dispatcher, config)
         elif dispather_type == CONF_DISPATCHER_SIMPLE:
-            make_simple_dispatcher(new_obj.dispatcher, config, logger)
+            make_simple_dispatcher(new_obj.dispatcher, config)
+        elif dispather_type == CONF_DISPATCHER_MANUAL:
+            make_manual_dispatcher(new_obj.dispatcher, config)
         elif dispather_type == CONF_DISPATCHER_DUMMY:
             pass
         else:
@@ -349,13 +351,18 @@ class DimMovementHandlerStrategy(SimpleMovementHandlerStrategy):
         await dispatcher.tree_context.state_controller.async_set(STATE_DIM)
 
 
-def make_simple_dispatcher(dispatcher, config, base_logger):
+def make_manual_dispatcher(dispatcher, config):
+    dispatcher.add_strategy(ManualHandlerStrategy())
+    return dispatcher
+
+
+def make_simple_dispatcher(dispatcher, config):
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(SimpleMovementHandlerStrategy(config))
     return dispatcher
 
 
-def make_dim_dispatcher(dispatcher, config, base_logger):
+def make_dim_dispatcher(dispatcher, config):
     dispatcher.add_strategy(ManualHandlerStrategy())
     dispatcher.add_strategy(DimMovementHandlerStrategy(config))
     return dispatcher
